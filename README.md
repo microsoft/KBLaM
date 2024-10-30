@@ -1,8 +1,54 @@
 # KBLaM - Knowledge Base Augmented Language Models
 
-KBLaM is a method to enhance a transformer-based LLM to augment it with knowledge. It consists of a base LLM, and some adapters that we train to transform the knowledge base to special knowledge tokens that the LLM ingests. In particular, because we only train adapters over the knowledge part, the base LLM is completely unmodified with regards to text input. If given no knowledge base, the model outputs the exact same thing as the base model for any given input.
+This project focuses on feeding a KB as a mode in an LLM. The setup largely follows [Llava](https://github.com/haotian-liu/LLaVA).
 
-<!-- TODO: Add usage example of KBLaM -->
+## Setting up
+
+To use Llama models, you will need to generate a token from HuggingFace and use it to log in:
+
+```
+pip install huggingface_hub
+huggingface-cli login
+```
+
+```
+sudo apt-get update
+sudo apt-get install libsecret-1-0 libsecret-1-dev
+```
+
+## Dataset Construction
+
+<!-- TODO: update this once we construct a public dataset. -->
+
+Given a KB, we construct question-answer pairs of the form:
+
+```
+What is the description of {entity_name}?
+The description of {entity_name} is {description}.
+```
+
+Put the required datasets into `./dataset`
+
+## Training
+
+To train the model, run a command like follows (with the appropriate arguments):
+
+```
+python train.py --dataset avocado_new --N 120000 --B 20 --steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug
+```
+
+Then the code in the `./notebook/demo.ipynb` should be runnable
+
+Also **make sure** to use `transformers` package of version 4.41.0.
+
+python train.py --dataset avocado_new --N 120000 --B 25 --steps 1001 --encoder_spec OAI --use_oai_embd --key_embd_src key -use_lr_decay
+python train.py --dataset avocado_new --N 120000 --B 20 --steps 10001 --encoder_spec OAI --use_oai_embd--key_embd_src key --tune_llm_q --use_data_aug --use_lr_decay
+
+<!-- # TODO:
+
+- Add end2end scripts for generate synthetic dataset and the embedding
+- Add end2end scripts for training
+- Add end2end scripts for testing -->
 
 ## Contributing
 
