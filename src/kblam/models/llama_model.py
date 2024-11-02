@@ -18,7 +18,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Code for Knowledge Base augmented Language Model model, code mostly adapted from LlaMA's source code
+Code for Knowledge Base augmented Language Model model, code mostly adapted from LLaMA's source code
+Adapted from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 """
 
 import math
