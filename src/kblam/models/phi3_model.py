@@ -12,7 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-# TODO: replace this with the updated version of the phi3_model and delete the one outside of src/kblam
 
 """ PyTorch Phi-3 model."""
 
@@ -892,7 +891,7 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[tuple] = None,
-        kb_config: Optional[KBLaMConfig] = None
+        kb_config: Optional[KBLaMConfig] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -978,8 +977,7 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         attention_mask=None,
         inputs_embeds=None,
         kb_kvs: Optional[tuple] = None,
-        kb_config: Optional[KBLaMConfig] = None
-        **kwargs,
+        kb_config: Optional[KBLaMConfig] = None**kwargs,
     ):
         if past_key_values is not None:
             if isinstance(past_key_values, Cache):

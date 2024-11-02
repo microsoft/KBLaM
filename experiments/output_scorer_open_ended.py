@@ -32,7 +32,7 @@ class Evaluator(GPT):
         self.system_msg = """You are an AI system that evaluates the quality of generated response. Your goals is to return a score between 0 and 5
                                     indicating how accurate and useful the response is. An accrate and useful response should get a high score of 5."""
         self.prompt_open_ended = """
-        A model is given a question about some information and evidence. 
+        A model is given a question about some information and evidence.
         The question is composed of two parts, a part that involves repeating information in the evidence and a part that potentially involves open-ended thinking.
         Then the model generates a response.
         Evaluate the response based on how grounded it is given the evidence and how reasonable it is.
@@ -140,7 +140,6 @@ def parser_args():
     parser.add_argument(
         "--predictions_file",
         type=str,
-        default="ScaleFactor_100FancyInstruction_lr_0.0001_kblayer_frequency_1_encoder_OAI_ckptidx_20000testset_gpt_data_kbsize_100_evalmode_icl_seed_1.txt",
         help="The file containing the model predictions.",
     )
     parser.add_argument(
