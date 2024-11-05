@@ -1,0 +1,24 @@
+name: main
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-tests:
+    uses: ./.github/workflows/run-tests.yml
+
+  codeql:
+    uses: ./.github/workflows/codeql.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      actions: read
+      security-events: write

@@ -18,9 +18,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Code for Knowledge Base augmented Language Model model, code mostly adapted from LlaMA's source code
-# TODO: Give credit to llama code base, add a link
-# TODO: replace this with the updated version of the llama_model and delete the one outside of src/kblam
+Code for Knowledge Base augmented Language Model model, code mostly adapted from LLaMA's source code
+Adapted from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
 """
 
 import math
@@ -667,7 +666,7 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
 
     def get_decoder(self):
         return self.model
-    
+
     def get_kblam_config(self):
         return self.config
 

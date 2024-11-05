@@ -1,0 +1,46 @@
+name: run-tests
+
+on:
+  workflow_call:
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    name: run-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install -U poetry
+          poetry install
+
+      - name: ruff-check
+        run: |
+          poetry run ruff check --no-fix --output-format=github
+
+      - name: ruff-format
+        run: |
+          poetry run ruff format --check
+
+      - name: pyright
+        run: |
+          poetry run pyright
+
+      - name: codespell
+        run: |
+          poetry run codespell
+
+      - name: pytest
+        run: |
+          poetry run coverage run -m pytest
+
+      - name: coverage
+        run: |
+          poetry run coverage xml -o .tmp/reports/coverage.xml
