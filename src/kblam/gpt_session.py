@@ -27,7 +27,7 @@ class GPT:
         presence_penalty: int = 0,
         seed: int = None,
     ):
-        if model_name not in ["GPT4", "gpt-4o", "ada-embeddings", "text-embedding-3-large"]:
+        if model_name not in ["gpt-4o", "ada-embeddings", "text-embedding-3-large"]:
             raise ValueError(
                 f"Invalid model: {model_name}. Valid models are: GPT4, gpt-4o, ada-embeddings"
             )

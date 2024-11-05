@@ -5,6 +5,7 @@ import re
 from itertools import product
 
 from tqdm import tqdm
+from transformers import AutoModelForCausalLM
 
 from kblam.gpt_session import GPT
 from kblam.utils.data_utils import DataPoint, Entity, save_entity
@@ -19,7 +20,7 @@ def construct_prompts(entity: DataPoint) -> tuple[str, str, str]:
 
 
 class SyntheticDataGenerator(GPT):
-    def __init__(self, model, endpoint_url, **kwargs) -> None:
+    def __init__(self, model: AutoModelForCausalLM, endpoint_url: str, **kwargs) -> None:
         self.system_prompt = """You are a AI system that generates synthetic data examples in JSON format."""
 
         self.entity_format_prompt = """
@@ -34,22 +35,27 @@ class SyntheticDataGenerator(GPT):
 
         self.prompt_2nd_phase = (
             """
-            Now for each of the names generated, generate a short desciption, short objectives, and a purpose for the data.
+            Now for each of the names generated, generate a short desciption, short objectives, and a purpose for the data point.
             Please ensure that the generated contents has **LOW** correlation with the name.
+            Make the data point styles diverse using a mixture of formal and informal language.
         """
             + self.entity_format_prompt
             + " Do **NOT** generate anything else."
         )
 
-        self.prompt_3rd_phase = (
-            """
-            Now for each of the name, description, objective and purpose generated, make their text style more diverse using a mixture of formal and informal language.
-        """
-            + self.entity_format_prompt
-        )
-
         self.idea_sources = [
+            "software companies",
+            "tech companies",
+            "software tools",
             "greek letters",
+            "product reviews",
+            "product releases",
+            "work-related concepts",
+            "work-related documents",
+            "document types",
+            "financial terms",
+            "legal terms",
+            "medical terms",
             "fiction characters",
             "famous rock bands",
             "birds",
@@ -68,6 +74,7 @@ class SyntheticDataGenerator(GPT):
             "mythological creatures",
             "planets and stars",
             "historical figures",
+            "political figures",
             "literary genres",
             "botanical names",
             "famous landmarks",
@@ -77,12 +84,30 @@ class SyntheticDataGenerator(GPT):
             "philosophical terms",
             "chemical elements",
             "famous scientists",
+            "famous mathematicians",
+            "famous authors",
             "marine life",
             "mythological places",
+            "famous battles",
+            "sports teams",
+            "sport events",
+            "food and drinks",
         ]
 
-        self.name_types = [
-            "education company",
+        self.data_types = [
+            "person name",
+            "idea",
+            "team",
+            "meeting",
+            "event",
+            "location",
+            "document",
+            "presentation",
+            "meeting",
+            "conference",
+            "workshop",
+            "database",
+            "organization",
             "tech company",
             "car company",
             "entertainment company",
@@ -92,35 +117,52 @@ class SyntheticDataGenerator(GPT):
             "healthcare company",
             "restaurant",
             "hotel",
+            "museum",
+            "university",
+            "educational institution",
+            "government agency",
+            "hospital",
             "github repo",
             "project",
             "meeting room",
             "building",
+            "product",
             "lab",
             "airline",
             "textbook",
+            "tv show",
+            "music album",
             "website",
             "personal blog",
             "gaming company",
+            "game" "movie studio",
             "consulting firm",
             "biotech company",
             "app",
             "software tool",
             "bookstore",
+            "coffee shop",
+            "bar",
             "e-commerce site",
             "social media platform",
             "fitness brand",
             "fashion brand",
+            "beauty brand",
+            "food brand",
+            "drink brand",
+            "sports brand",
+            "travel brand",
             "non-profit organization",
+            "political party",
         ]
 
         super().__init__(model, endpoint_url, **kwargs)
 
     def get_instructions(self):
         return [
-            f"Please randomly generate a {name_type} name innovated by {idea_type}."
-            "The generated name should be of diverse style and length. A valid name should consist of a single word (such as Alexandria) or multiple words (such as Microsoft Office or Theta-Phoenix Entertainment). "
-            for (name_type, idea_type) in product(self.idea_sources, self.name_types)
+            f"Please randomly generate a {name_type} name innovated by or associated with {idea_type}."
+            "The generated name should be of diverse style and length. A valid name should consist of a single word (such as Alexandria or Microsoft) or multiple words (such as Microsoft Office or Theta-Phoenix Entertainment). "
+            for (name_type, idea_type) in product(self.idea_sources, self.data_types)
         ]
 
     def generate_entity(self, instruction: str) -> Entity:
@@ -137,15 +179,6 @@ class SyntheticDataGenerator(GPT):
             {"role": "user", "content": self.prompt_2nd_phase},
         ]
         gpt_output = self.api_call_chat(messages)
-
-        messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": instruction},
-            {"role": "assistant", "content": gpt_output},
-            {"role": "user", "content": self.prompt_2nd_phase},
-            {"role": "assistant", "content": gpt_output},
-            {"role": "user", "content": self.prompt_3rd_phase},
-        ]
 
         gpt_output = self.api_call_chat(messages)
         entity = Entity(**json.loads(gpt_output))
@@ -193,9 +226,9 @@ class SyntheticDataGenerator(GPT):
 def parser_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="gpt-4o")
-    parser.add_argument("--endpoint_url", type=str)
+    parser.add_argument("--endpoint_url", type=str, required=True)
     parser.add_argument("--output_path", type=str, default="dataset")
-    parser.add_argument("--raw_output_file", type=str, default="synthetic_data_raw.json")
+    parser.add_argument("--raw_output_file", type=str, default="synthetic_data_raw1.json")
     parser.add_argument("--output_file", type=str, default="synthetic_data_QA.json")
     parser.add_argument("--augmented_output_file", type=str, default="synthetic_data_QA_augmented.json")
 
