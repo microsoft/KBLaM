@@ -11,6 +11,7 @@ from azure.identity import (
 from openai import AzureOpenAI
 import argparse
 
+valid_models = ["gpt-4o", "ada-embeddings", "text-embedding-3-large"]
 
 class GPT:
     def __init__(
@@ -27,9 +28,9 @@ class GPT:
         presence_penalty: int = 0,
         seed: int = None,
     ):
-        if model_name not in ["gpt-4o", "ada-embeddings", "text-embedding-3-large"]:
+        if model_name not in valid_models:
             raise ValueError(
-                f"Invalid model: {model_name}. Valid models are: GPT4, gpt-4o, ada-embeddings"
+                f"Invalid model: {model_name}. Valid models are: {valid_models}"
             )
 
         token_provider = get_bearer_token_provider(

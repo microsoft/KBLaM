@@ -184,6 +184,21 @@ class SyntheticDataGenerator(GPT):
         entity = Entity(**json.loads(gpt_output))
         return entity
 
+    def generate_related_data(self, entity: Entity) -> Entity:
+        instruction = f"Generate a person name related to the entity {entity.name} with description {entity.description}."
+        instruction += "The person needs to be associated with the entity in some way. e.g. they work in the company or they are a character in the book."
+        instruction += f"Make sure the entity is in the format of {self.entity_format_prompt}"
+
+        prompt = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": instruction},
+        ]
+
+        gpt_output = self.api_call_chat(prompt)
+        entity = Entity(**json.loads(gpt_output))
+
+        return entity
+
     def post_process_data(self, entity_list: list[Entity]) -> list[DataPoint]:
         dataset = []
         keywords = {"description", "objectives", "purpose"}
@@ -228,7 +243,8 @@ def parser_args():
     parser.add_argument("--model_name", type=str, default="gpt-4o")
     parser.add_argument("--endpoint_url", type=str, required=True)
     parser.add_argument("--output_path", type=str, default="dataset")
-    parser.add_argument("--raw_output_file", type=str, default="synthetic_data_raw1.json")
+    parser.add_argument("--generate_related_people", type=bool, default=True)
+    parser.add_argument("--raw_output_file", type=str, default="synthetic_data_raw.json")
     parser.add_argument("--output_file", type=str, default="synthetic_data_QA.json")
     parser.add_argument("--augmented_output_file", type=str, default="synthetic_data_QA_augmented.json")
 
@@ -248,18 +264,28 @@ if __name__ == "__main__":
         data_generator.set_seed(seed)
         for instruction in tqdm(data_generator.get_instructions()):
             try:
-                response = data_generator.generate_entity(instruction)
+                entity = data_generator.generate_entity(instruction)
             except Exception as e:
                 print(f"Error generating entity.")
                 print(e)
                 continue
-            save_entity(response, args.raw_output_file)
-            entity_list.append(response)
+            save_entity(entity, os.path.join(args.output_path, args.raw_output_file))
+            entity_list.append(entity)
+
+            if args.generate_related_people:
+                try:
+                    response = data_generator.generate_related_data(entity)
+                except Exception as e:
+                    print(f"Error generating entity.")
+                    print(e)
+                    continue
+                save_entity(response, os.path.join(args.output_path, args.raw_output_file))
+                entity_list.append(response)
 
     dataset = data_generator.post_process_data(entity_list)
     for data in dataset:
-        save_entity(data, args.output_file)
+        save_entity(data, os.join(args.output_path, args.output_file))
 
     dataset = data_generator.augmenta_data_with_synthetic_QA(dataset)
     for data in dataset:
-        save_entity(data, args.augmented_output_file)
+        save_entity(data, os.join(args.output_path, args.augmented_output_file))
