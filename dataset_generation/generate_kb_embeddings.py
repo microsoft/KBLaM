@@ -63,10 +63,13 @@ if __name__ == "__main__":
 
         key_embeds = []
         value_embeds = []
+        batch_size = 100
 
-        for entity in tqdm(dataset):
-            key_embeds.append(gpt.generate_embedding(entity.key_string))
-            value_embeds.append(gpt.generate_embedding(entity.description))
+        chunks = [dataset[i : i + batch_size] for i in range(0, len(dataset), batch_size)]
+
+        for chunk in tqdm(chunks):
+            key_embeds.extend(gpt.generate_embeddings([entity.key_string for entity in chunk]))
+            value_embeds.extend(gpt.generate_embeddings([entity.description for entity in chunk]))
     else:
         raise ValueError(f"Model {args.model_name} not supported.")
 

@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -9,7 +10,6 @@ from azure.identity import (
     get_bearer_token_provider,
 )
 from openai import AzureOpenAI
-import argparse
 
 
 class GPT:
@@ -26,21 +26,28 @@ class GPT:
         frequency_penalty: int = 0,
         presence_penalty: int = 0,
         seed: int = None,
+        get_credential_function: callable = None,
+        token=None,
     ):
         if model_name not in ["GPT4", "gpt-4o", "ada-embeddings", "text-embedding-3-large"]:
-            raise ValueError(
-                f"Invalid model: {model_name}. Valid models are: GPT4, gpt-4o, ada-embeddings"
+            raise ValueError(f"Invalid model: {model_name}. Valid models are: GPT4, gpt-4o, ada-embeddings")
+
+        if token is None:
+            token_provider = get_bearer_token_provider(
+                self._get_credential(), "https://cognitiveservices.azure.com/.default"
             )
 
-        token_provider = get_bearer_token_provider(
-            self._get_credential(), "https://cognitiveservices.azure.com/.default"
-        )
-
-        self.OA_client = AzureOpenAI(
-            azure_endpoint=endpoint_url,
-            api_version=api_version,
-            azure_ad_token_provider=token_provider,
-        )
+            self.OA_client = AzureOpenAI(
+                azure_endpoint=endpoint_url,
+                api_version=api_version,
+                azure_ad_token_provider=token_provider,
+            )
+        else:
+            self.OA_client = AzureOpenAI(
+                api_key=token,
+                azure_endpoint=endpoint_url,
+                api_version=api_version,
+            )
 
         self.max_retries = max_retries
         self.system_msg = system_msg
@@ -63,9 +70,7 @@ class GPT:
             auth_record_root_path = Path.home()
 
         auth_record_path = auth_record_root_path / lib_name / "auth_record.json"
-        cache_options = TokenCachePersistenceOptions(
-            name=f"{lib_name}.cache", allow_unencrypted_storage=True
-        )
+        cache_options = TokenCachePersistenceOptions(name=f"{lib_name}.cache", allow_unencrypted_storage=True)
 
         if auth_record_path.exists():
             with open(auth_record_path, "r") as f:
@@ -102,9 +107,7 @@ class GPT:
 
     def _api_call_embedding(self, text: str) -> list[float] | None:
         for _ in range(self.max_retries):
-            embedding = self.OA_client.embeddings.create(
-                input=text, model=self.model_name
-            )
+            embedding = self.OA_client.embeddings.create(input=text, model=self.model_name)
             if embedding:
                 return embedding.data[0].embedding
         return None
@@ -135,6 +138,14 @@ class GPT:
         """
         embedding = self._api_call_embedding(text)
         return embedding
+
+    def generate_embeddings(self, texts: list[str]) -> list[list[float]] | None:
+        """
+        Generate embeddings for the given list of texts.
+        This setup can be used for Ada embeddings but not for text generation.
+        """
+        embeddings = self.OA_client.embeddings.create(input=texts, model=self.model_name)
+        return [e.embedding for e in embeddings.data]
 
 
 def parser_args():
