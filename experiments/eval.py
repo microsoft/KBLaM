@@ -394,6 +394,7 @@ parent_parser.add_argument('--model_dir', type=str, help='Directory containing t
 parent_parser.add_argument('--save_dir', type=str, help='Directory to save outputs')
 parent_parser.add_argument('--seed', type=int, help='Random seed for reproducibility')
 parent_parser.add_argument('--test_dataset', type=str, help='Source of test KB (assumes KV pair format)')
+parent_parser.add_argument('--query_head_path', type=str, default="")
 
 # Create subparsers
 subparsers = parser.add_subparsers(dest='command', required=True)
@@ -629,6 +630,7 @@ def eval_accuracy():
     test_batch_size = args.test_batch_size
     test_dataset = args.test_dataset
     use_shift_match = args.use_shift_match
+    query_head_path = args.query_head_path
 
     if kb_scale_factor == -1:
         kb_scale_factor = None
@@ -654,12 +656,21 @@ def eval_accuracy():
     tokenizer.pad_token = "^"
 
     if llm_type == "llama3":
-        model = KblamLlamaForCausalLM.from_pretrained(
-            model_path,
-            device_map="cuda",
-            torch_dtype="auto",
-            trust_remote_code=True,
-        )
+        if query_head_path:
+            model = KblamLlamaForCausalLM.from_pretrained(
+                model_path,
+                device_map="cuda",
+                torch_dtype="auto",
+                trust_remote_code=True,
+            )
+            model.load_query_head(query_head_path)
+        else:
+            model = KblamLlamaForCausalLM.from_pretrained(
+                model_path,
+                device_map="cuda",
+                torch_dtype="auto",
+                trust_remote_code=True,
+            )
     else:
         model = KBLaMPhi3ForCausalLM.from_pretrained(
             model_path,
@@ -682,7 +693,12 @@ def eval_accuracy():
     )
 
     encoder.load_state_dict(torch.load(encoder_path))
-    dataset_subset_idx = np.random.choice(len(dataset), kb_size, replace=False)
+
+    if kb_size == len(dataset):
+        dataset_subset_idx = range(len(dataset))
+    else:
+        dataset_subset_idx = np.random.choice(len(dataset), kb_size, replace=False)
+
     dataset_subset = [dataset[i] for i in dataset_subset_idx]
     encoder.eval()
     with torch.autograd.no_grad():
@@ -706,30 +722,34 @@ def eval_accuracy():
     kb_embedding_real = (kb_embedding_real[0], kb_embedding_real[1])
 
     kb_config = KBLaMConfig(
-        sep_query_head=True,
+        # sep_query_head=True,
         kb_layer_frequency=kb_layer_frequency,
         kb_scale_factor=kb_scale_factor,
+        **model.config.to_dict(),
     )
+    model.config = kb_config
 
     with torch.autograd.no_grad():
-        _ = model.generate(
+        outputs = model.generate(
             input_ids=input_ids,
             attention_mask=attention_masks,
             kb_kvs=kb_embedding_real,
             max_new_tokens=60,
             tokenizer=tokenizer,
             output_attentions=True,
-            kb_config=kb_config,
             save_attention_weights=True,
             attention_save_loc=args.attn_save_dir,
             attention_file_base_name=exp_config,
         )
+        outputs = tokenizer.batch_decode(outputs.squeeze(), skip_special_tokens=False)
+        print(outputs[:10])
 
     save_dir = args.log_save_dir
     accs = []
     for idx in range(0, 32, kb_layer_frequency):
         weight = np.load(os.path.join(args.attn_save_dir, f"{exp_config}_{idx}.npy"))[..., :kb_size]
         label = np.arange(test_batch_size)
+        print("BATCH SIZE/KBSIZE:", test_batch_size, kb_size)
         weight = weight.reshape(test_batch_size, -1, kb_size)
         acc = (weight.sum(1).argmax(1) == label).mean()
         top_5_predictions = torch.topk(torch.from_numpy(weight.sum(1)), 5, dim=1)[1]
@@ -737,8 +757,13 @@ def eval_accuracy():
         accs.append((acc, top_5_acc))
     save_path = Path(save_dir)
     save_path.mkdir(exist_ok=True, parents=True)
+    print("ACC & TOP 5 ACC:", accs)
 
     np.save(save_path / f"{exp_config}_acc.npy", np.array(accs))
+    with open(save_path / f"{exp_config}_acc.txt", "w+") as text_file:
+        for output in outputs:
+            output_string = output.strip("^")
+            text_file.write(f"{str(output_string)}\n")
 
 
 def eval_refusal():

@@ -24,6 +24,7 @@ Adapted from https://github.com/huggingface/transformers/blob/main/src/transform
 
 import math
 import os
+import copy
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -154,7 +155,7 @@ class KblamLlamaAttention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         kb_kvs: Optional[tuple] = None,
         kb_config: Optional[KBLaMConfig] = None,
-        save_attention_weights: bool = False,
+        save_attention_weights: bool = True,
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
         **kwargs,
@@ -276,12 +277,17 @@ class KblamLlamaAttention(nn.Module):
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)
         if not attn_weights.requires_grad:
             # TODO: Make this function injectable
+            # print("CHECKING SAVE_ATTENTION_WEIGHTS", save_attention_weights)
             if save_attention_weights:
                 if q_len > 1:
+                    save_path = os.path.join(attention_save_loc, f'{attention_file_base_name}_{self.layer_idx}.npy')
+                    print("SAVING", attention_save_loc, save_path)
                     np.save(
-                        os.path.join(attention_save_loc, f'{attention_save_loc}_{self.layer_idx}.npy'),
+                        save_path,
                         attn_weights.to(torch.float32).cpu().detach().numpy(),
                     )
+        else:
+            print("ATTN WEIGHTS REQUIRE DGRAD")
         attn_weights = attn_weights.to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
@@ -639,7 +645,9 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
-        self.model = LlamaModel.from_pretrained(config.base_model_name_or_path, torch_dtype=config.torch_dtype)
+        base_model_name_or_path = config.base_model_name_or_path if hasattr(config, "base_model_name_or_path") else config._name_or_path
+        print(f"BASE MODEL: {base_model_name_or_path}")
+        self.model = LlamaModel.from_pretrained(base_model_name_or_path, torch_dtype=config.torch_dtype)
         self.vocab_size = self.model.config.vocab_size
         self.lm_head = nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
 
@@ -730,6 +738,7 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -842,14 +851,15 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
             if past_key_values:
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
+        model_inputs = copy.copy(kwargs)
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
+            model_inputs["inputs_embeds"] = inputs_embeds
         else:
             # The `contiguous()` here is necessary to have a static stride during decoding. torchdynamo otherwise
             # recompiles graphs as the stride of the inputs is a guard. Ref: https://github.com/huggingface/transformers/pull/29114
             # TODO: use `next_tokens` directly instead.
-            model_inputs = {"input_ids": input_ids.contiguous()}
+            model_inputs["input_ids"] = input_ids.contiguous()
 
         input_length = position_ids.shape[-1] if position_ids is not None else input_ids.shape[-1]
         if cache_position is None:
