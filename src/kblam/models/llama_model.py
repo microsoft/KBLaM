@@ -281,7 +281,6 @@ class KblamLlamaAttention(nn.Module):
             if save_attention_weights:
                 if q_len > 1:
                     save_path = os.path.join(attention_save_loc, f'{attention_file_base_name}_{self.layer_idx}.npy')
-                    print("SAVING", attention_save_loc, save_path)
                     np.save(
                         save_path,
                         attn_weights.to(torch.float32).cpu().detach().numpy(),
@@ -645,7 +644,9 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
-        base_model_name_or_path = config.base_model_name_or_path if hasattr(config, "base_model_name_or_path") else config._name_or_path
+        base_model_name_or_path = (
+            config.base_model_name_or_path if hasattr(config, "base_model_name_or_path") else config._name_or_path
+        )
         print(f"BASE MODEL: {base_model_name_or_path}")
         self.model = LlamaModel.from_pretrained(base_model_name_or_path, torch_dtype=config.torch_dtype)
         self.vocab_size = self.model.config.vocab_size
