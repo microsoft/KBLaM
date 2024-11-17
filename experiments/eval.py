@@ -395,6 +395,11 @@ parent_parser.add_argument('--save_dir', type=str, help='Directory to save outpu
 parent_parser.add_argument('--seed', type=int, help='Random seed for reproducibility')
 parent_parser.add_argument('--test_dataset', type=str, help='Source of test KB (assumes KV pair format)')
 parent_parser.add_argument('--query_head_path', type=str, default="")
+parent_parser.add_argument(
+    '--mlflow',
+    default=False,
+    action='store_true',
+)
 
 # Create subparsers
 subparsers = parser.add_subparsers(dest='command', required=True)
@@ -615,6 +620,8 @@ def eval_generate():
 def eval_accuracy_cli():
     args = parser.parse_args()
 
+    print("ARGS: ", args)
+
     dataset_dir = args.dataset_dir
     encoder_path = args.encoder_dir
     encoder_spec = args.encoder_spec
@@ -632,6 +639,14 @@ def eval_accuracy_cli():
     query_head_path = args.query_head_path
     save_dir = args.log_save_dir
     attn_save_dir = args.attn_save_dir
+    seed = args.seed
+    use_mlflow = args.mlflow
+
+    test_batch_size = min(test_batch_size, kb_size)
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
     return eval_accuracy(
         dataset_dir,
         encoder_path,
@@ -650,6 +665,7 @@ def eval_accuracy_cli():
         query_head_path,
         save_dir=save_dir,
         attn_save_dir=attn_save_dir,
+        use_mlflow=use_mlflow,
     )
 
 
@@ -677,6 +693,7 @@ def eval_accuracy(
     value_embds=None,
     tokenizer=None,
     encoder=None,
+    use_mlflow=False,
 ):
     """Evaluate accuracy using KB"""
 
@@ -714,6 +731,7 @@ def eval_accuracy(
                     torch_dtype="auto",
                     trust_remote_code=True,
                 )
+                print("PATHS:", os.listdir(os.path.dirname(query_head_path)))
                 model.load_query_head(query_head_path)
             else:
                 model = KblamLlamaForCausalLM.from_pretrained(
@@ -809,6 +827,11 @@ def eval_accuracy(
             top_5_predictions = torch.topk(torch.from_numpy(weight.sum(1)), 5, dim=1)[1]
             top_5_acc = (top_5_predictions.numpy() == label[:, None]).any(1).mean()
             accs.append((acc, top_5_acc))
+            if use_mlflow and idx < 17 and idx > 13:
+                import mlflow
+
+                mlflow.log_metric(f"kb_size_{kb_size}_acc_{idx}", acc)
+                mlflow.log_metric(f"kb_size_{kb_size}_top_5_acc_{idx}", top_5_acc)
     save_path = Path(save_dir)
     save_path.mkdir(exist_ok=True, parents=True)
     print("ACC & TOP 5 ACC:", accs)
