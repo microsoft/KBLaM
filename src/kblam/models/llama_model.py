@@ -639,7 +639,12 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
-        self.model = LlamaModel.from_pretrained(config.base_model_name_or_path, torch_dtype=config.torch_dtype)
+        if hasattr(config, "base_model_name_or_path"):
+            model_name = config.base_model_name_or_path
+        else:
+            model_name = config.model_name_or_path
+            
+        self.model = LlamaModel.from_pretrained(model_name, torch_dtype=config.torch_dtype)
         self.vocab_size = self.model.config.vocab_size
         self.lm_head = nn.Linear(self.model.config.hidden_size, self.model.config.vocab_size, bias=False)
 

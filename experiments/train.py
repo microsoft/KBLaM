@@ -20,8 +20,9 @@ from torch.optim.optimizer import ParamsT
 from transformers import AutoTokenizer
 
 from kblam.kb_encoder import KBEncoder
-from kblam.models.llama_model import KblamForCausalLM
-from kblam.models.phi3_model import KbphiForCausalLM
+from kblam.models.llama_model import KblamLlamaForCausalLM
+from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.kblam_config import KBLaMConfig
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
 from kblam.utils.train_utils import get_kb_embd
 
@@ -54,11 +55,9 @@ logging.basicConfig(
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=1)
 parser.add_argument("--train_dataset",type=str,default="synthetic_data",choices=["enron", "synthetic_data"])
-parser.add_argument("--N", type=int, default=1000, help="Size of training set, select the first N samples for training")
+parser.add_argument("--N", type=int, default=120000, help="Size of training set, select the first N samples for training")
 parser.add_argument("--B", type=int, default=10, help="Batch size")
 parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-parser.add_argument("--load_epoch", type=int, default=None, help="load from checkpoint")
-parser.add_argument("--freeze_v_proj", action="store_true", help="Freeze the value projector head")
 parser.add_argument("--tune_llm_q", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embedding")
@@ -68,12 +67,11 @@ parser.add_argument("--encoder_spec", type=str, default="OAI")
 parser.add_argument("--key_embd_src", type=str, default="key", choices=["key", "answer", "questions", None], help="Source of key embedding")
 parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick templates for the question")
 parser.add_argument("--use_lr_decay", action="store_true")
-parser.add_argument("--dataset_dir", type=str, default="synthetic_data",help="Where is the data saved?")
+parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir", type=str, default=None, help="Where is the base model saved")
-parser.add_argument("--hf_model_spec", type=str, default="microsoft/Phi-3-mini-4k-instruct", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct"])
+parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Meta-Llama-3-8B", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
-parser.add_argument("--log_save_dir", type=str, help="Place to save the training log")
 parser.add_argument("--kb_size", type=int, default=None, help="Place to save the training log")
 parser.add_argument("--duplicate_true_kb", action=argparse.BooleanOptionalAction, default=True, help="Duplicate true entity's KB token")
 parser.add_argument("--length_invariance", action=argparse.BooleanOptionalAction, default=False, help="Scale the raw attention score")
@@ -82,10 +80,9 @@ parser.add_argument("--multi_entities", type=int, default=None, help="Introduce 
 parser.add_argument("--use_extended_qa", action="store_true", help="Introduce QA with extended open-ended parts")
 parser.add_argument("--kb_token_layer_frequency", type=int, default=None, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
-parser.add_argument("--use_cuda", action="store_true", help="Use cuda if available")
 parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
 parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
-parser.add_argument("--llm_type",type=str,default="phi3",choices=["llama3", "phi3"])
+parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3"])
 # fmt: on
 
 
@@ -367,7 +364,7 @@ def _get_parameter_count(encoder):
 
 
 def _get_phi3_query_head_parameters(
-    model: KblamForCausalLM | KbphiForCausalLM,
+    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
     sep_query_head: bool,
     actual_kb_token_layer_frequency: int,
 ):
@@ -395,7 +392,7 @@ def _get_phi3_query_head_parameters(
 
 
 def _get_llama3_query_head_parameters(
-    model: KblamForCausalLM | KbphiForCausalLM,
+    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
     sep_query_head: bool,
     actual_kb_token_layer_frequency: int,
 ):
@@ -488,7 +485,7 @@ def _setup_scheduler_and_optimizer(model_parapmeters: ParamsT, lr: float, max_it
 class Trainer:
     def __init__(
         self,
-        llm_model: KbphiForCausalLM | KblamForCausalLM,
+        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
         actual_kb_token_layer_frequency: int,
@@ -519,10 +516,10 @@ class Trainer:
         self.encoder_savename = encoder_savename
         self.output_path = pathlib.Path(output_dir)
 
-        if isinstance(llm_model, KbphiForCausalLM):  # Phi3
+        if isinstance(llm_model, KBLaMPhi3ForCausalLM):  # Phi3
             self._get_batch = partial(get_batch, _format_QA_phi3, _create_labels_for_phi3)
             self._get_params = _get_phi3_query_head_parameters
-        elif isinstance(llm_model, KblamForCausalLM):  # llama
+        elif isinstance(llm_model, KblamLlamaForCausalLM):  # llama
             self._get_batch = partial(get_batch, _format_QA_llama, _create_labels_for_llama)
             self._get_params = _get_llama3_query_head_parameters
         else:
@@ -561,6 +558,12 @@ class Trainer:
     ):
         train_losses = []
         start_epoch = 0
+
+        kb_config = KBLaMConfig(
+            sep_query_head=self.sep_query_head,
+            kb_layer_frequency=self.actual_kb_token_layer_frequency,
+        )
+
         with create_custom_progress_bar(console=console) as pbar:
             task = pbar.add_task("Training", total=self.num_epochs, loss=100)
             for epoch in range(start_epoch, self.num_epochs, 1):
@@ -590,13 +593,9 @@ class Trainer:
                     out = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_masks,
-                        kb_kv=kb_embedding,
+                        kb_kvs=kb_embedding,
                         output_attentions=True,
-                        kb_config={
-                            "sep_query_head": self.sep_query_head,
-                            "eval_mode": False,
-                            "kb_layer_frequency": self.actual_kb_token_layer_frequency,
-                        },
+                        kb_config=kb_config,
                     )
                     logits = out["logits"]
 
@@ -650,10 +649,8 @@ def main():
     logger = logging.getLogger("training")
 
     args = parser.parse_args()
-    if args.use_cuda and torch.cuda.is_available():
+    if torch.cuda.is_available():
         device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
 
     if args.verbose:
         logger.setLevel(logging.DEBUG)
@@ -667,7 +664,6 @@ def main():
     epoch = args.epoch
 
     encoder_spec = args.encoder_spec
-    load_epoch = args.load_epoch
     fine_tune_llm_q = args.tune_llm_q
     key_embd_src = args.key_embd_src
     use_data_aug = args.use_data_aug
@@ -676,7 +672,6 @@ def main():
     dataset_dir = args.dataset_dir
     model_dir = args.model_dir
     model_save_dir = args.model_save_dir
-    log_save_dir = args.log_save_dir
     sep_query_head = args.sep_query_head
     kb_size = args.kb_size
     gradient_accm_step = args.gradient_accm_step
@@ -752,20 +747,20 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         llm_model_spec,
         trust_remote_code=True,
-        use_auth_token=hf_token if hf_token is args.llm_type == "llama3" else None,
+        token=hf_token if hf_token is args.llm_type == "llama3" else None,
     )
     tokenizer.pad_token = tokenizer.eos_token
 
     if args.llm_type == "llama3":
-        model = KblamForCausalLM.from_pretrained(
+        model = KblamLlamaForCausalLM.from_pretrained(
             llm_model_spec,
             device_map=device,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            use_auth_token=hf_token,
+            token=hf_token,
         )
     elif args.llm_type == "phi3":
-        model = KbphiForCausalLM.from_pretrained(
+        model = KBLaMPhi3ForCausalLM.from_pretrained(
             llm_model_spec,
             device_map=device,
             torch_dtype="auto",
