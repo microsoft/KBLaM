@@ -26,6 +26,10 @@ dependencies = [
     "openai",
     "pytest",
     "rich",
+    "evaluate",
+    "nltk",
+    "rouge-score",
+    "bert_score"
 ]
 
 [project.optional-dependencies]

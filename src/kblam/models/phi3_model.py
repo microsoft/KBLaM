@@ -378,7 +378,7 @@ class KBLaMPhi3Attention(nn.Module):
                     kb_values = kb_values.unsqueeze(0).expand(bsz, self.num_heads, kb_len, self.head_dim)
                     # Append the KB keys and values in the front, in front of padding
                     key_states = torch.concat([kb_keys, key_states], dim=2)
-                    value_states = torch.concat([kb_valsep_query_headues, value_states], dim=2)
+                    value_states = torch.concat([kb_values, value_states], dim=2)
                 elif len(kb_keys.shape) == 3:  # Has a batch dim
                     kb_len = kb_keys.shape[1]
                     kb_keys = kb_keys.view(bsz, kb_len, 1 + self.config.num_hidden_layers // 3, -1)[:, :, kb_idx]
@@ -418,7 +418,7 @@ class KBLaMPhi3Attention(nn.Module):
             if save_attention_weights:
                 if q_len > 1:
                     np.save(
-                        os.path.join(attention_save_loc, f'{attention_save_loc}_{self.layer_idx}.npy'),
+                        os.path.join(attention_save_loc, f'{attention_file_base_name}_{self.layer_idx}.npy'),
                         attn_weights.to(torch.float32).cpu().detach().numpy(),
                     )
 
@@ -701,6 +701,9 @@ class Phi3Model(Phi3PreTrainedModel):
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[tuple] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -791,6 +794,9 @@ class Phi3Model(Phi3PreTrainedModel):
                     use_cache,
                     kb_kvs,
                     kb_config,
+                    save_attention_weights,
+                    attention_save_loc,
+                    attention_file_base_name,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -802,6 +808,9 @@ class Phi3Model(Phi3PreTrainedModel):
                     use_cache=use_cache,
                     kb_kvs=kb_kvs,
                     kb_config=kb_config,
+                    save_attention_weights=save_attention_weights,
+                    attention_save_loc=attention_save_loc,
+                    attention_file_base_name=attention_file_base_name,
                 )
 
             hidden_states = layer_outputs[0]
@@ -892,6 +901,9 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[tuple] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -926,6 +938,8 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+        # print(f"{attention_save_loc} {attention_file_base_name} {save_attention_weights}")
+        # print(kb_config)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -938,6 +952,9 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
             return_dict=return_dict,
             kb_kvs=kb_kvs,
             kb_config=kb_config,
+            save_attention_weights=save_attention_weights,
+            attention_save_loc=attention_save_loc,
+            attention_file_base_name=attention_file_base_name,
         )
 
         hidden_states = outputs[0]
@@ -977,7 +994,11 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         attention_mask=None,
         inputs_embeds=None,
         kb_kvs: Optional[tuple] = None,
-        kb_config: Optional[KBLaMConfig] = None**kwargs,
+        kb_config: Optional[KBLaMConfig] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
+        **kwargs,
     ):
         if past_key_values is not None:
             if isinstance(past_key_values, Cache):
@@ -1028,8 +1049,12 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
-                'kb_kvs': kb_kvs,
-                'kb_config': kb_config,
+                "kb_kvs": kb_kvs,
+                "kb_config": kb_config,
+                "save_attention_weights": save_attention_weights,
+                "attention_save_loc": attention_save_loc,
+                "attention_file_base_name": attention_file_base_name,
+
             }
         )
         return model_inputs
