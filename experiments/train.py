@@ -20,7 +20,7 @@ from torch.optim.optimizer import ParamsT
 from transformers import AutoTokenizer
 
 from kblam.kb_encoder import KBEncoder
-from kblam.models.llama_model import KblamLlamaForCausalLM
+from kblam.models.llama3_2_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
@@ -69,7 +69,7 @@ parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick t
 parser.add_argument("--use_lr_decay", action="store_true")
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir", type=str, default=None, help="Where is the base model saved")
-parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Meta-Llama-3-8B", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B"])
+parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
 parser.add_argument("--kb_size", type=int, default=None, help="Place to save the training log")
