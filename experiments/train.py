@@ -24,7 +24,7 @@ from kblam.models.llama3_2_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
-from kblam.utils.train_utils import get_kb_embd
+from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGFORMAT_RICH = "%(message)s"
@@ -57,7 +57,7 @@ parser.add_argument("--seed", type=int, default=1)
 parser.add_argument("--train_dataset",type=str,default="synthetic_data",choices=["enron", "synthetic_data"])
 parser.add_argument("--N", type=int, default=120000, help="Size of training set, select the first N samples for training")
 parser.add_argument("--B", type=int, default=10, help="Batch size")
-parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
 parser.add_argument("--tune_llm_q", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embedding")
@@ -72,13 +72,13 @@ parser.add_argument("--model_dir", type=str, default=None, help="Where is the ba
 parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
-parser.add_argument("--kb_size", type=int, default=None, help="Place to save the training log")
+parser.add_argument("--kb_size", type=int, default=None, help="The size of the KB set size. If dynamic, it will be randomly selected at each step.")
 parser.add_argument("--duplicate_true_kb", action=argparse.BooleanOptionalAction, default=True, help="Duplicate true entity's KB token")
 parser.add_argument("--length_invariance", action=argparse.BooleanOptionalAction, default=False, help="Scale the raw attention score")
-parser.add_argument("--outlier_ratio", type=int, default=-1, help="Introduce questions without correct KB entites")
-parser.add_argument("--multi_entities", type=int, default=None, help="Introduce questions involving multiple entities")
+parser.add_argument("--outlier_ratio", type=int, default=1, help="Introduce questions without correct KB entites")
+parser.add_argument("--multi_entities", type=int, default=2, help="Introduce questions involving multiple entities")
 parser.add_argument("--use_extended_qa", action="store_true", help="Introduce QA with extended open-ended parts")
-parser.add_argument("--kb_token_layer_frequency", type=int, default=None, help="Introduce QA with extended open-ended parts")
+parser.add_argument("--kb_token_layer_frequency", type=int, default=3, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
 parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
@@ -305,15 +305,6 @@ def _load_cached_embeddigns(encoder_model_spec: str, dataset_dir: str, dataset_n
             )
         ).astype("float32")
     return key_embds, value_embds
-
-
-def context_set_size_scheduler(epoch: int, kb_size: str | int):
-    if kb_size is not None:
-        if kb_size == "dynamic":
-            return np.random.randint(4, 100)
-        return kb_size
-    round = (epoch) // 100
-    return 4 * (round + 1)
 
 
 def get_step_config(

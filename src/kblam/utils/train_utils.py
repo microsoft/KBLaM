@@ -145,3 +145,13 @@ def compute_perplexity_gain(model, kb, input_ids, attention_mask, labels):
         )
         conditioned_nll = weighted_nll(model, input_ids, attention_mask, labels, kb)
     return unconditioned_nll, conditioned_nll  # Loss should decrease
+
+
+def context_set_size_scheduler(epoch: int, kb_size: str | int) -> int:
+    """Determines the KB size for the current training step """
+    if kb_size == "dynamic":
+        return np.random.randint(10, 200)
+    if not kb_size:
+        round = (epoch) // 100
+        return 4 * (round + 1)
+    return kb_size

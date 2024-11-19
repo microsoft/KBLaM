@@ -165,6 +165,7 @@ class KblamLlamaAttention(nn.Module):
         kb_layer_frequency = kb_config.kb_layer_frequency
         dynamic_sparsify = kb_config.dynamic_sparsify
         topk_size = kb_config.top_k_kb
+        attn_weights_2 = None
 
         if kb_kvs is not None:
             if self.layer_idx % kb_layer_frequency == 0:
