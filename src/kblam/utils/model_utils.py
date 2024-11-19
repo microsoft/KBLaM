@@ -20,11 +20,3 @@ def load_model_and_processor(
 
     processor = KBLaMProcessor(tokenizer, args)
     return model, processor
-
-
-if __name__ == "__main__":
-    model_path = "/home/lmikaelyan/KBLaM/llama1B/stage1_lr_0.0001KBTokenLayerFreq3UseExtendedQAUseOutlier1KBSizedynamicSepQueryHeadKeyFromkey_OAI_synthetic_data_llama3_epoch_4300"
-    model = KblamLlamaForCausalLM.from_pretrained(model_path, local_files_only=True).bfloat16()
-    #tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    # new_model = KblamLlamaForCausalLM(config).bfloat16()
-    # new_model.load_state_dict(old_model.state_dict())
