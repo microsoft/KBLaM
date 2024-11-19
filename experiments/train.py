@@ -23,7 +23,11 @@ from kblam.kb_encoder import KBEncoder
 from kblam.models.llama3_2_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.kblam_config import KBLaMConfig
+from kblam.models.llama3_2_model import KblamLlamaForCausalLM
+from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.kblam_config import KBLaMConfig
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
+from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler
 from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -62,7 +66,7 @@ parser.add_argument("--tune_llm_q", action=argparse.BooleanOptionalAction, help=
 parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embedding")
 parser.add_argument("--use_cached_embd", action="store_true", help="Choose to use pre-computed KV embeddings")
-parser.add_argument("--step", type=int, default=20000, help="Total steps")
+parser.add_argument("--total_steps", type=int, default=20000, help="Total steps")
 parser.add_argument("--encoder_spec", type=str, default="OAI")
 parser.add_argument("--key_embd_src", type=str, default="key", choices=["key", "answer", "questions", None], help="Source of key embedding")
 parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick templates for the question")
@@ -544,7 +548,6 @@ class Trainer:
         use_extended_qa: bool = False,
         save_period: int = 2000,
         resumed_step: int = 0,
-        fine_tune_llm_q: Optional[bool] = False,
     ):
         train_losses = []
         start_step = resumed_step
@@ -651,7 +654,7 @@ def main():
     seed = args.seed
     N = args.N
     B = args.B
-    step = args.step
+    total_steps = args.total_steps
 
     encoder_spec = args.encoder_spec
     fine_tune_llm_q = args.tune_llm_q
@@ -806,7 +809,7 @@ def main():
         kbretriever,
         tokenizer,
         actual_kb_token_layer_frequency,
-        step,
+        total_steps,
         lr,
         device,
         use_lr_decay,
@@ -828,7 +831,6 @@ def main():
         multi_entities=multi_entities,
         use_extended_qa=use_extended_qa,
         save_period=100,
-        fine_tune_llm_q=fine_tune_llm_q,
         resumed_step=resumed_step
     )
 
