@@ -239,10 +239,10 @@ class SyntheticDataGenerator(GPT):
         return dataset
     
 
-    def perturbe_names(self, dataset: list[DataPoint]):
+    def perturb_names(self, dataset: list[DataPoint]):
         for data in dataset:
             try:
-                prompt = f"Perturbe the names in the queries of the dataset (e.g. Margaret Thatcher -> Maggie Thatcher or Microsoft Research to MSR) for data point with name {data.name}."
+                prompt = f"Perturb the names in the queries of the dataset (e.g. Margaret Thatcher -> Maggie Thatcher or Microsoft Research to MSR) for data point with name {data.name}."
                 prompt += f"Return the question {data.Q} with the perturbed name. Make sure the perturbation is valid. Do NOT generate anything else."
                 gpt_output = self.generate_response(prompt)
                 data.Q = gpt_output
