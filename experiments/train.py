@@ -62,13 +62,13 @@ parser.add_argument("--tune_llm_q", action=argparse.BooleanOptionalAction, help=
 parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
 parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embedding")
 parser.add_argument("--use_cached_embd", action="store_true", help="Choose to use pre-computed KV embeddings")
-parser.add_argument("--epoch", type=int, default=300, help="Total epochs")
+parser.add_argument("--step", type=int, default=20000, help="Total steps")
 parser.add_argument("--encoder_spec", type=str, default="OAI")
 parser.add_argument("--key_embd_src", type=str, default="key", choices=["key", "answer", "questions", None], help="Source of key embedding")
 parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick templates for the question")
 parser.add_argument("--use_lr_decay", action="store_true")
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
-parser.add_argument("--model_dir", type=str, default=None, help="Where is the base model saved")
+parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
 parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
@@ -429,7 +429,7 @@ class KBRetriever:
         else:
             return False
 
-    def get_key_embeddings(self, batch_indices, batch_size, epoch, kb_size):
+    def get_key_embeddings(self, batch_indices, batch_size, step, kb_size):
         if self._use_cached_embd():
             train_set_key, train_set_val = get_kb_embd(
                 self.encoder,
@@ -444,7 +444,7 @@ class KBRetriever:
             train_set_key = train_set_key.unsqueeze(0).transpose(0, 1)
             train_set_val = train_set_val.unsqueeze(0).transpose(0, 1)
 
-        context_set_size = context_set_size_scheduler(epoch, kb_size)
+        context_set_size = context_set_size_scheduler(step, kb_size)
         context_set_index = np.random.choice(len(self.dataset), context_set_size, replace=False)  # type: ignore
         if self._use_cached_embd():
             context_set_key, context_set_val = get_kb_embd(
@@ -480,13 +480,12 @@ class Trainer:
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
         actual_kb_token_layer_frequency: int,
-        num_epochs: int,
+        num_steps: int,
         lr: float,
         device: torch.device,
         use_lr_decay: bool,
         kb_size: int,
         llm_savename: str,
-        encoder_savename: str,
         output_dir: str,
         fine_tune_llm_q: bool = False,
         sep_query_head: bool = False,
@@ -495,7 +494,7 @@ class Trainer:
         self.tokenizer = tokenizer
         self.sep_query_head = sep_query_head
         self.actual_kb_token_layer_frequency = actual_kb_token_layer_frequency
-        self.num_epochs = num_epochs
+        self.num_steps = num_steps
         self.lr = lr
         self.model = llm_model
         self.fine_tune_llm_q = fine_tune_llm_q
@@ -504,7 +503,6 @@ class Trainer:
         self.kb_size = kb_size
         self.use_lr_decay = use_lr_decay
         self.llm_savename = llm_savename
-        self.encoder_savename = encoder_savename
         self.output_path = pathlib.Path(output_dir)
 
         if isinstance(llm_model, KBLaMPhi3ForCausalLM):  # Phi3
@@ -525,12 +523,12 @@ class Trainer:
             scheduler, optim = _setup_scheduler_and_optimizer(
                 chain(self.kbretriever.encoder.parameters(), llm_q_params),
                 self.lr,
-                self.num_epochs,
+                self.num_steps,
             )
             self.logger.info("Optimizer recreated")
         else:
             scheduler, optim = _setup_scheduler_and_optimizer(
-                self.kbretriever.encoder.parameters(), self.lr, self.num_epochs
+                self.kbretriever.encoder.parameters(), self.lr, self.num_steps
             )
             self.logger.info("Optimizer recreated")
         return scheduler, optim
@@ -545,10 +543,11 @@ class Trainer:
         multi_entities: bool = False,
         use_extended_qa: bool = False,
         save_period: int = 2000,
+        resumed_step: int = 0,
         fine_tune_llm_q: Optional[bool] = False,
     ):
         train_losses = []
-        start_epoch = 0
+        start_step = resumed_step
 
         kb_config = KBLaMConfig(
             sep_query_head=self.sep_query_head,
@@ -556,8 +555,8 @@ class Trainer:
         )
 
         with create_custom_progress_bar(console=console) as pbar:
-            task = pbar.add_task("Training", total=self.num_epochs, loss=100)
-            for epoch in range(start_epoch, self.num_epochs, 1):
+            task = pbar.add_task("Training", total=self.num_steps, loss=100)
+            for step in range(start_step, self.num_steps, 1):
 
                 self.optim.zero_grad()
                 losses = []
@@ -580,7 +579,7 @@ class Trainer:
                         random_sample=True,
                         **step_config,
                     )
-                    kb_embedding = self.kbretriever.get_key_embeddings(batch_indices, batch_size, epoch, self.kb_size)
+                    kb_embedding = self.kbretriever.get_key_embeddings(batch_indices, batch_size, step, self.kb_size)
                     out = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_masks,
@@ -591,7 +590,7 @@ class Trainer:
                     logits = out["logits"]
 
                     # display ground truth and model prediction to quickly check model
-                    if a_step == 0 and epoch % 10 == 0:
+                    if a_step == 0 and step % 10 == 0:
                         batch_index = 0  # Which example in the batch to select
                         max_logits = logits.argmax(axis=2)
                         decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
@@ -622,18 +621,18 @@ class Trainer:
                 if self.use_lr_decay:
                     self.scheduler.step()
 
-                self.logger.info(f"Epoch: {epoch}, loss: {np.mean(losses)}")
+                self.logger.info(f"step: {step}, loss: {np.mean(losses)}")
 
                 train_losses.append(np.mean(losses))
                 pbar.update(task, advance=1, loss=np.mean(losses))
-                if epoch % save_period == 0:
-                    ckpt_name = self.output_path / f"{self.encoder_savename}_epoch_{epoch}"
-                    torch.save(self.kbretriever.encoder.state_dict(), ckpt_name)
 
-                if fine_tune_llm_q:
-                    if (epoch % save_period) == 0 and (epoch != start_epoch):
-                        model_ckpt_name = self.output_path / f"{self.llm_savename}_epoch_{epoch}"
-                        self.model.save_pretrained(model_ckpt_name)
+                if (step % save_period) == 0 and (step != start_step):
+                    # Save both the full model with query head and the encoder
+                    model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
+                    self.model.save_pretrained(model_ckpt_name)
+
+                    encoder_ckpt_name = model_ckpt_name / "encoder.pt"
+                    torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
 
 
 def main():
@@ -652,7 +651,7 @@ def main():
     seed = args.seed
     N = args.N
     B = args.B
-    epoch = args.epoch
+    step = args.step
 
     encoder_spec = args.encoder_spec
     fine_tune_llm_q = args.tune_llm_q
@@ -661,7 +660,7 @@ def main():
     use_lr_decay = args.use_lr_decay
     use_cached_embd = args.use_cached_embd
     dataset_dir = args.dataset_dir
-    model_dir = args.model_dir
+    model_dir_to_resume = args.model_dir_to_resume
     model_save_dir = args.model_save_dir
     sep_query_head = args.sep_query_head
     kb_size = args.kb_size
@@ -727,16 +726,19 @@ def main():
         actual_kb_token_layer_frequency = kb_token_layer_frequency
 
     # Set up the LLM
-    llm_model_spec = model_dir if model_dir else hf_model_spec
+    llm_model_spec = model_dir_to_resume if model_dir_to_resume else hf_model_spec
+
+    resumed_step = 0 if not model_dir_to_resume else int(model_dir_to_resume.split("_")[-1])
 
     if llm_model_spec is None:
-        raise ValueError("Either supply model_dir or hf_model_spec")
+        raise ValueError("Either supply model_dir_to_resume or hf_model_spec")
 
     if hf_token is None and args.llm_type == "llama3":
         raise ValueError("Please supply HuggingFace token(hf_token) when loading model Llama weights from HuggingFace")
 
+    # Tokenizer comes from the base model
     tokenizer = AutoTokenizer.from_pretrained(
-        llm_model_spec,
+        hf_model_spec,
         trust_remote_code=True,
         token=hf_token if hf_token is args.llm_type == "llama3" else None,
     )
@@ -778,7 +780,10 @@ def main():
         device=device,
     )
 
-    encoder.train()  # Double check
+    if model_dir_to_resume:
+        encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))   
+
+    encoder.train()
 
     kbretriever = KBRetriever(
         encoder,
@@ -794,7 +799,6 @@ def main():
     prefix_string = get_prefix_str(args)
     if fine_tune_llm_q:
         prefix_string += "FineTuneQuery"
-    encoder_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{dataset_name}_{encoder_spec}"
     prefix_string = get_prefix_str(args)
     llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
     trainer = Trainer(
@@ -802,13 +806,12 @@ def main():
         kbretriever,
         tokenizer,
         actual_kb_token_layer_frequency,
-        epoch,
+        step,
         lr,
         device,
         use_lr_decay,
         kb_size,  # type: ignore
         llm_ckpt_name,
-        encoder_ckpt_name,
         model_save_dir,
         fine_tune_llm_q=fine_tune_llm_q,
         sep_query_head=sep_query_head,
@@ -826,6 +829,7 @@ def main():
         use_extended_qa=use_extended_qa,
         save_period=100,
         fine_tune_llm_q=fine_tune_llm_q,
+        resumed_step=resumed_step
     )
 
 
