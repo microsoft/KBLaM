@@ -106,14 +106,6 @@ def answer_question(
         if kb_scale_factor == -1:
             kb_scale_factor = None
 
-        kb_config = KBLaMConfig(
-            sep_query_head=True,
-            kb_scale_factor=kb_scale_factor,
-            top_k_kb=topk_size,
-            dynamic_sparsify=dynamic_sparsify,
-            kb_layer_frequency=kb_layer_frequency,
-        )
-
         outputs = model.generate(
             input_ids=input_ids,
             attention_mask=attention_masks,
@@ -121,7 +113,6 @@ def answer_question(
             max_new_tokens=150,
             tokenizer=tokenizer,
             output_attentions=True,
-            kb_config=kb_config,
         ).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 
@@ -174,6 +165,8 @@ def perform_eval(
     kb_scale_factor: int = -1,
     multi_entites: int = -1,
     remove_sorry: bool = False,
+    use_mlflow: bool = False,
+    config_name: str = 'generation_results',
 ):
     np.random.seed(seed)
     kb_idx = np.random.randint(0, len(kb_retriever.dataset), kb_size)
@@ -261,8 +254,15 @@ def perform_eval(
     for pred, gt in zip(model_outputs, answers):
         print(f"PREDICTION: {pred}")
         print(f"GT: {gt}")
-    rogue_score = rouge.compute(predictions=model_outputs, references=answers)
-    print(rogue_score)
+
+    rouge_score = rouge.compute(predictions=model_outputs, references=answers)
+    print("ROUGE:", rouge_score)
+
+    if use_mlflow:
+        import mlflow
+
+        for rouge_type, scores in rouge_score.items():
+            mlflow.log_metric(config_name + rouge_type, np.mean(scores))
     bertscore = bert_score.compute(
         predictions=model_outputs, references=answers, lang="en", model_type='microsoft/deberta-xlarge-mnli'
     )
@@ -271,12 +271,15 @@ def perform_eval(
         if isinstance(v, list):
             bert_scores.append(np.mean(v))
             print(k, np.mean(v))
+            if use_mlflow:
+                mlflow.log_metric(config_name + k, np.mean(v))
+
     results = ''
     for a, A in full_outputs:
         results += f'Model output: {a}\nTrue answer: {A}\n-------\n'
     if eval_mode == 'kb':
         eval_mode = encoder_model_spec + eval_mode
-    return results, bert_scores + list(rogue_score.values())
+    return results, bert_scores + list(rouge_score.values())
 
 
 def perform_eval_refusal(
@@ -438,6 +441,8 @@ gen_parser.add_argument('--topk_size', type=int, default=-1, help='Size of top-k
 gen_parser.add_argument(
     '--use_precomputed_embd', action='store_true', default=False, help='Use pre-computed embeddings'
 )
+gen_parser.add_argument('--test_batch_size', type=int, default=50, help='Batch size for testing')
+gen_parser.add_argument('--log_save_dir', type=str, help='Directory to save accuracy results')
 
 # Create the parser for the generation command
 acc_parser = subparsers.add_parser('accuracy', parents=[parent_parser], help='Evaluate accuracy')
@@ -491,7 +496,6 @@ ref_parser.add_argument(
 
 # Create the parser for the standard command
 basic_parser = subparsers.add_parser('standard', parents=[parent_parser], help='Evaluate basic performance')
-basic_parser.add_argument('--attn_summary_save_dir', type=str, default="", help='Directory to save attention masks')
 basic_parser.add_argument(
     '--eval_mode',
     type=str,
@@ -502,7 +506,6 @@ basic_parser.add_argument(
 basic_parser.add_argument(
     '--exp_config_name', type=str, default="basic_results", help='Name of the experiment configuration'
 )
-basic_parser.add_argument('--exp_config_str', type=str, help='Experiment configuration string')
 basic_parser.add_argument(
     '--kb_token_layer_frequency', type=int, default=None, help='Frequency of knowledge base token layers'
 )
@@ -524,7 +527,6 @@ basic_parser.add_argument(
 def eval_generate():
     """Evaluate generation using KB"""
     args = parser.parse_args()
-    actual_kb_token_layer_frequency = args.kb_token_layer_frequency
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
     encoder_path = args.encoder_dir
@@ -539,6 +541,9 @@ def eval_generate():
     seed = args.seed
     test_dataset = args.test_dataset
     use_precomputed_embd = args.use_precomputed_embd
+    query_head_path = args.query_head_path
+    use_mlflow = args.mlflow
+    save_dir = args.log_save_dir
 
     validation_part_start_idx = 120000 if 'gpt' in test_dataset else 0
 
@@ -554,18 +559,32 @@ def eval_generate():
             'float32'
         )[validation_part_start_idx:]
 
-    kb_layer_frequency = kb_layer_frequency
-
     tokenizer = AutoTokenizer.from_pretrained(llm_base_dir, trust_remote_code=True, padding_side='left')
     tokenizer.pad_token = '^'
 
     if llm_type == "llama3":
-        model = KblamLlamaForCausalLM.from_pretrained(
-            model_path,
-            device_map="cuda",
-            torch_dtype="auto",
-            trust_remote_code=True,
+        if query_head_path:
+            model = KblamLlamaForCausalLM.from_pretrained(
+                model_path,
+                device_map="cuda",
+                torch_dtype="auto",
+                trust_remote_code=True,
+            )
+            print("PATHS:", os.listdir(os.path.dirname(query_head_path)))
+            model.load_query_head(query_head_path)
+        else:
+            model = KblamLlamaForCausalLM.from_pretrained(
+                model_path,
+                device_map="cuda",
+                torch_dtype="auto",
+                trust_remote_code=True,
+            )
+        kb_config = KBLaMConfig(
+            kb_layer_frequency=kb_layer_frequency,
+            kb_scale_factor=kb_scale_factor,
+            **model.config.to_dict(),
         )
+        model.config = kb_config
     else:
         model = KBLaMPhi3ForCausalLM.from_pretrained(
             model_path,
@@ -575,6 +594,7 @@ def eval_generate():
         )
 
     model.generation_config.pad_token_id = tokenizer.pad_token_id
+    model.generation_config.eos_token_id = 128009
     model.eval()
 
     encoder = KBEncoder(
@@ -582,7 +602,7 @@ def eval_generate():
         projector_type="linear",
         endpoint_url="",
         out_dim=model.config.hidden_size  # type: ignore
-        * (model.config.num_hidden_layers // actual_kb_token_layer_frequency + 1),  # type: ignore
+        * (model.config.num_hidden_layers // kb_layer_frequency + 1),  # type: ignore
         frozen_base_model=True,
         device=torch.device("cuda"),
     )
@@ -607,11 +627,13 @@ def eval_generate():
         topk_size=args.topk_size,
         multi_entites=args.multi_entites,
         kb_scale_factor=kb_scale_factor,
+        config_name=f"kb_size_{kb_size}",
+        use_mlflow=use_mlflow,
     )
     mem_cost = torch.cuda.max_memory_reserved('cuda')
     score_output.append(mem_cost)
 
-    (Path(args.save_dir) / exp_config).mkdir(exist_ok=True, parents=True)
+    (Path(save_dir) / exp_config).mkdir(exist_ok=True, parents=True)
     np.save(os.path.join(args.save_dir, exp_config), np.array(score_output))
     text_file = open(os.path.join(args.save_dir, exp_config + '.txt'), "w")
     text_file.write(gen_results)
@@ -935,23 +957,23 @@ def eval_refusal():
 def eval():
     """Evaluate the KB model"""
     args = parser.parse_args()
-    attn_summary_save_dir = args.attn_summary_save_dir
+    attn_save_dir = args.attn_save_dir
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
     encoder_path = args.encoder_dir
-    exp_config_str = args.exp_config_str
+    exp_config_name = args.exp_config_name
     kb_layer_frequency = args.kb_layer_frequency
     kb_scale_factor = args.kb_scale_factor
     kb_size = args.kb_size
     llm_base_dir = args.llm_base_dir
     llm_type = args.llm_type
     model_path = args.model_dir
-    output_dir = args.output_dir
     sample_size = args.sample_size
     seed = args.seed
     subset_size = args.subset_size
     test_dataset = args.test_dataset
-    use_precomputed_embd = args.use_precomputed_embd
+    save_dir = args.log_save_dir
+    use_mlflow = args.mlflow
 
     sep_query_head = True
     actual_kb_token_layer_frequency = 3
@@ -962,13 +984,12 @@ def eval():
     validation_part_start_idx = 120000 if 'gpt' in test_dataset else 0
     dataset = json.load(open(os.path.join(dataset_dir, test_dataset + '.json')))[validation_part_start_idx:]
 
-    if use_precomputed_embd:
-        key_embds = np.load(os.path.join(dataset_dir, f'{test_dataset}_{encoder_model_spec}_embd_key.npy')).astype(
-            'float32'
-        )[validation_part_start_idx:]
-        value_embds = np.load(os.path.join(dataset_dir, f'{test_dataset}_{encoder_model_spec}_embd_value.npy')).astype(
-            'float32'
-        )[validation_part_start_idx:]
+    key_embds = np.load(os.path.join(dataset_dir, f'{test_dataset}_{encoder_model_spec}_embd_key.npy')).astype(
+        'float32'
+    )[validation_part_start_idx:]
+    value_embds = np.load(os.path.join(dataset_dir, f'{test_dataset}_{encoder_model_spec}_embd_value.npy')).astype(
+        'float32'
+    )[validation_part_start_idx:]
 
     if sep_query_head:
         print("Having seperate query head for KB!")
@@ -976,7 +997,6 @@ def eval():
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    os.environ["ATTN_SAVE_DIR"] = output_dir
     os.environ["EVAL_MODE"] = "1"
 
     llm_model_spec = llm_base_dir
@@ -1039,8 +1059,7 @@ def eval():
         value_embds=value_embds,
     )
 
-    if use_precomputed_embd:
-        assert len(dataset) == len(key_embds)
+    assert len(dataset) == len(key_embds)
 
     no_kb_predictions = []
     predictions = []
@@ -1118,22 +1137,22 @@ def eval():
             print("--------------------")
         print("******")
 
-    config_str = f"{exp_config_str}__kb_{subset_size}__seed_{seed}"
+    config_str = exp_config_name  # Assume that the user has set this up outside of this script.
 
-    rogue_score = rouge.compute(predictions=predictions, references=answer)
-    np.savez(os.path.join(attn_summary_save_dir, f"{config_str}_rouge.npy"), **rogue_score)
+    # TODO: Add mlflow
+    rouge_score = rouge.compute(predictions=predictions, references=answer)
+    np.savez(os.path.join(save_dir, f"{config_str}_rouge.npy"), **rouge_score)
 
     rogue_score_no_kb = rouge.compute(predictions=no_kb_predictions, references=answer)
     np.savez(
-        os.path.join(attn_summary_save_dir, f"{config_str}_rouge_no_kb.npy"),
+        os.path.join(save_dir, f"{config_str}_rouge_no_kb.npy"),
         **rogue_score_no_kb,
     )
 
     # Start inspecting attention masks
     ranges = [(0, 6), (6, 12), (12, 18), (18, 24), (24, 30), (30, 32)]
 
-    save_dir = output_dir
-    Path(args.save_dir).mkdir(exist_ok=True, parents=True)
+    Path(save_dir).mkdir(exist_ok=True, parents=True)
 
     accs, confidences = [], []
     for left, right in ranges:
@@ -1143,7 +1162,6 @@ def eval():
             if idx % 3 == 0:
                 weight = np.load(os.path.join(save_dir, f"{config_str}_{idx}.npy"))
                 weights.append(weight[..., :kb_size].reshape(kb_size, -1, kb_size))
-        print(len(weights))
         weights = np.stack(weights)
         weights = weights.transpose(1, 0, 2, 3).reshape(kb_size, -1, kb_size)
         acc = (weights.sum(1).argmax(1) == np.arange(kb_size)).mean()
@@ -1152,8 +1170,8 @@ def eval():
         accs.append((acc, top_5_acc))
         confidence = softmax(weights.mean(1), -1).max()
         confidences.append(confidence)
-    np.save(os.path.join(attn_summary_save_dir, f"{config_str}_acc.npy"), np.array(accs))
-    np.save(os.path.join(attn_summary_save_dir, f"{config_str}_conf.npy"), np.array(confidences))
+    np.save(os.path.join(save_dir, f"{config_str}_acc.npy"), np.array(accs))
+    np.save(os.path.join(dsave_dir, f"{config_str}_conf.npy"), np.array(confidences))
 
 
 def main():
