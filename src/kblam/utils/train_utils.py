@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from torch.nn import CrossEntropyLoss
+import argparse
 
 
 def get_tensor_config(x: torch.tensor) -> dict[str, any]:
@@ -155,3 +156,30 @@ def context_set_size_scheduler(epoch: int, kb_size: str | int) -> int:
         round = (epoch) // 100
         return 4 * (round + 1)
     return kb_size
+
+
+def get_prefix_str(args: argparse.Namespace) -> str:
+    kb_size = args.kb_size
+    if kb_size == -1:
+        kb_size = None  # Progressively increase size
+    elif kb_size == 0:
+        kb_size = "dynamic"  # Random size
+
+    prefix_string = f"stage1_lr_{args.lr}"
+    if args.kb_token_layer_frequency is not None:
+        prefix_string += f"KBTokenLayerFreq{args.kb_token_layer_frequency}"
+    if args.use_extended_qa:
+        prefix_string += "UseExtendedQA"
+    if args.multi_entities is not None:
+        prefix_string += f"MultiEntities{args.multi_entities}"
+    if args.outlier_num > 0:
+        prefix_string += f"UseOutlier{args.outlier_num}"
+    if args.length_invariance:
+        prefix_string += "LengthInvariant"
+    if kb_size is not None:
+        prefix_string += f"KBSize{kb_size}"
+    if args.sep_query_head:
+        prefix_string += "SepQueryHead"
+    if args.use_data_aug:
+        prefix_string += "UseDataAug"
+    return prefix_string

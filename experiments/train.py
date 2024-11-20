@@ -20,15 +20,11 @@ from torch.optim.optimizer import ParamsT
 from transformers import AutoTokenizer
 
 from kblam.kb_encoder import KBEncoder
-from kblam.models.llama3_2_model import KblamLlamaForCausalLM
-from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
-from kblam.models.kblam_config import KBLaMConfig
-from kblam.models.llama3_2_model import KblamLlamaForCausalLM
+from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
-from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler
-from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler
+from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler, get_prefix_str
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGFORMAT_RICH = "%(message)s"
@@ -62,8 +58,7 @@ parser.add_argument("--train_dataset",type=str,default="synthetic_data",choices=
 parser.add_argument("--N", type=int, default=120000, help="Size of training set, select the first N samples for training")
 parser.add_argument("--B", type=int, default=10, help="Batch size")
 parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-parser.add_argument("--tune_llm_q", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
-parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Fine tune the query head")
+parser.add_argument("--sep_query_head", action=argparse.BooleanOptionalAction, help="Train a separate query head")
 parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embedding")
 parser.add_argument("--use_cached_embd", action="store_true", help="Choose to use pre-computed KV embeddings")
 parser.add_argument("--total_steps", type=int, default=20000, help="Total steps")
@@ -77,9 +72,8 @@ parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
 parser.add_argument("--kb_size", type=int, default=None, help="The size of the KB set size. If dynamic, it will be randomly selected at each step.")
-parser.add_argument("--duplicate_true_kb", action=argparse.BooleanOptionalAction, default=True, help="Duplicate true entity's KB token")
 parser.add_argument("--length_invariance", action=argparse.BooleanOptionalAction, default=False, help="Scale the raw attention score")
-parser.add_argument("--outlier_ratio", type=int, default=1, help="Introduce questions without correct KB entites")
+parser.add_argument("--outlier_num", type=int, default=1, help="Introduce questions without correct KB entites")
 parser.add_argument("--multi_entities", type=int, default=2, help="Introduce questions involving multiple entities")
 parser.add_argument("--use_extended_qa", action="store_true", help="Introduce QA with extended open-ended parts")
 parser.add_argument("--kb_token_layer_frequency", type=int, default=3, help="Introduce QA with extended open-ended parts")
@@ -242,45 +236,6 @@ def get_batch(
     return input_ids, attention_masks, labels, batch_indices
 
 
-def get_prefix_str(args):
-    use_data_aug = args.use_data_aug
-    sep_query_head = args.sep_query_head
-    kb_size = args.kb_size
-    if kb_size == -1:
-        kb_size = None  # Progressively increase size
-    elif kb_size == 0:
-        kb_size = "dynamic"  # Random size
-    duplicate_true_kb = args.duplicate_true_kb
-    length_invariance = args.length_invariance
-    outlier_ratio = args.outlier_ratio
-    use_outlier = outlier_ratio != -1
-    multi_entities = args.multi_entities
-    use_extended_qa = args.use_extended_qa
-    kb_token_layer_frequency = args.kb_token_layer_frequency
-    lr = args.lr
-
-    prefix_string = f"stage1_lr_{lr}"
-    if kb_token_layer_frequency is not None:
-        prefix_string += f"KBTokenLayerFreq{kb_token_layer_frequency}"
-    if use_extended_qa:
-        prefix_string += "UseExtendedQA"
-    if multi_entities is not None:
-        prefix_string += f"MultiEntities{multi_entities}"
-    if use_outlier:
-        prefix_string += f"UseOutlier{outlier_ratio}"
-    if length_invariance:
-        prefix_string += "LengthInvariant"
-    if not duplicate_true_kb:
-        prefix_string += "NoDuplicate"
-    if kb_size is not None:
-        prefix_string += f"KBSize{kb_size}"
-    if sep_query_head:
-        prefix_string += "SepQueryHead"
-    if use_data_aug:
-        prefix_string += "UseDataAug"
-    return prefix_string
-
-
 def _load_cached_embeddigns(encoder_model_spec: str, dataset_dir: str, dataset_name: str, key_embd_src: str):
 
     if encoder_model_spec == "OAI":
@@ -315,30 +270,28 @@ def get_step_config(
     current_accum_step: int,
     total_accum_step: int,
     use_data_aug: bool,
-    outlier_ratio: int,
+    outlier_num: int,
     multi_entities: int | None,
     use_extended_qa: bool,
 ):
     """
     Our instruction tuning dataset is composed of different types of instructions.
     Strategies:
-    Outlier QA takes the last `outlier_ratio` accum steps;
+    Outlier QA takes the last `outlier_num` accum steps;
     Multiple entites QA (if included) takes 1/3 of the rest accum_steps;
     Extended QA (if included) takes 1/3 of the rest accum_steps;
     Standard QA takes the rest.
     """
-    use_outlier = outlier_ratio != -1
     config = {}
     config["use_data_aug"] = use_data_aug
     config["include_outlier"] = False
     config["multi_entities"] = None
     config["use_extended_qa"] = False
-    if use_outlier:
-        include_outlier = current_accum_step >= total_accum_step - 1 - outlier_ratio
-        # Decide to include outlier and has reached the time
-        if include_outlier:
-            config["include_outlier"] = True
-            return config
+    include_outlier = current_accum_step >= total_accum_step - 1 - outlier_num
+    # Decide to include outlier and has reached the time
+    if include_outlier:
+        config["include_outlier"] = True
+        return config
     if current_accum_step % 3 == 0:
         # multi_entities could be None,
         # in which case we just use standard QA
@@ -361,7 +314,7 @@ def _get_parameter_count(encoder):
 def _get_phi3_query_head_parameters(
     model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
     sep_query_head: bool,
-    actual_kb_token_layer_frequency: int,
+    kb_token_layer_frequency: int,
 ):
     llm_q_params = []
     for name, param in model.named_parameters():
@@ -369,18 +322,18 @@ def _get_phi3_query_head_parameters(
             # For phi3
             if "qkv_proj.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     old_weight = param.detach()
             if "q_proj_new.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     param.copy_(old_weight[: model.config.hidden_size, :])  # type: ignore
                     param.requires_grad = True
                     llm_q_params.append(param)
         else:
             if "q_proj.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     param.requires_grad = True
                     llm_q_params.append(param)
     return llm_q_params
@@ -389,7 +342,7 @@ def _get_phi3_query_head_parameters(
 def _get_llama3_query_head_parameters(
     model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
     sep_query_head: bool,
-    actual_kb_token_layer_frequency: int,
+    kb_token_layer_frequency: int,
 ):
     llm_q_params = []
     for name, param in model.named_parameters():
@@ -397,18 +350,18 @@ def _get_llama3_query_head_parameters(
             # For llama3
             if "q_proj.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     old_weight = param.detach()
             if "q_proj_new.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     param.copy_(old_weight)  # type: ignore
                     param.requires_grad = True
                     llm_q_params.append(param)
         else:
             if "q_proj.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
-                if layer_id % actual_kb_token_layer_frequency == 0:
+                if layer_id % kb_token_layer_frequency == 0:
                     param.requires_grad = True
                     llm_q_params.append(param)
     return llm_q_params
@@ -483,7 +436,7 @@ class Trainer:
         llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
-        actual_kb_token_layer_frequency: int,
+        kb_token_layer_frequency: int,
         num_steps: int,
         lr: float,
         device: torch.device,
@@ -491,17 +444,15 @@ class Trainer:
         kb_size: int,
         llm_savename: str,
         output_dir: str,
-        fine_tune_llm_q: bool = False,
         sep_query_head: bool = False,
     ):
         self.logger = logging.getLogger("training")
         self.tokenizer = tokenizer
         self.sep_query_head = sep_query_head
-        self.actual_kb_token_layer_frequency = actual_kb_token_layer_frequency
+        self.kb_token_layer_frequency = kb_token_layer_frequency
         self.num_steps = num_steps
         self.lr = lr
         self.model = llm_model
-        self.fine_tune_llm_q = fine_tune_llm_q
         self.device = device
         self.kbretriever = kbretriever
         self.kb_size = kb_size
@@ -521,9 +472,9 @@ class Trainer:
         self.scheduler, self.optim = self.setup_scheduler_and_optim()
 
     def setup_scheduler_and_optim(self):
-        if self.fine_tune_llm_q:
+        if self.sep_query_head:
             self.logger.info("Query head being fine tuned!")
-            llm_q_params = self._get_params(self.model, self.sep_query_head, self.actual_kb_token_layer_frequency)
+            llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
             scheduler, optim = _setup_scheduler_and_optimizer(
                 chain(self.kbretriever.encoder.parameters(), llm_q_params),
                 self.lr,
@@ -542,20 +493,18 @@ class Trainer:
         training_set: List[Dict],
         batch_size,
         grad_accum_steps: int,
-        outlier_ratio: int,
+        outlier_num: int,
         use_data_aug: bool = False,
         multi_entities: bool = False,
         use_extended_qa: bool = False,
         save_period: int = 2000,
         resumed_step: int = 0,
+        kb_config: KBLaMConfig = None,
     ):
         train_losses = []
         start_step = resumed_step
 
-        kb_config = KBLaMConfig(
-            sep_query_head=self.sep_query_head,
-            kb_layer_frequency=self.actual_kb_token_layer_frequency,
-        )
+        loss_fct = CrossEntropyLoss(reduction="none")
 
         with create_custom_progress_bar(console=console) as pbar:
             task = pbar.add_task("Training", total=self.num_steps, loss=100)
@@ -570,7 +519,7 @@ class Trainer:
                         a_step,
                         grad_accum_steps,
                         use_data_aug,
-                        outlier_ratio,
+                        outlier_num,
                         multi_entities,
                         use_extended_qa,
                     )
@@ -610,7 +559,7 @@ class Trainer:
                     shift_logits = shift_logits.view(-1, self.model.config.vocab_size)
                     shift_labels = shift_labels.view(-1)
                     weights = weights.view(-1)
-                    loss_fct = CrossEntropyLoss(reduction="none")
+                    
                     shift_labels = shift_labels.to(shift_logits.device)
 
                     loss = (
@@ -630,12 +579,14 @@ class Trainer:
                 pbar.update(task, advance=1, loss=np.mean(losses))
 
                 if (step % save_period) == 0 and (step != start_step):
-                    # Save both the full model with query head and the encoder
+                    # Save the full model with query head, and the encoder (adapter) and the kb_config
                     model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
                     self.model.save_pretrained(model_ckpt_name)
 
                     encoder_ckpt_name = model_ckpt_name / "encoder.pt"
                     torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
+
+                    kb_config.save_pretrained(model_ckpt_name / "kb_config.json")
 
 
 def main():
@@ -657,7 +608,6 @@ def main():
     total_steps = args.total_steps
 
     encoder_spec = args.encoder_spec
-    fine_tune_llm_q = args.tune_llm_q
     key_embd_src = args.key_embd_src
     use_data_aug = args.use_data_aug
     use_lr_decay = args.use_lr_decay
@@ -674,7 +624,7 @@ def main():
         kb_size = "dynamic"  # Random size
 
     length_invariance = args.length_invariance
-    outlier_ratio = args.outlier_ratio
+    outlier_num = args.outlier_num
     multi_entities = args.multi_entities
     use_extended_qa = args.use_extended_qa
     kb_token_layer_frequency = args.kb_token_layer_frequency
@@ -713,6 +663,7 @@ def main():
         logger.info(f"Using pre-computed {encoder_spec} embedding")
         key_embds, value_embds = _load_cached_embeddigns(encoder_spec, dataset_dir, dataset_name, key_embd_src)
 
+    prefix_string = get_prefix_str(args)
     logger.info(f"Experiment prefix {get_prefix_str(args)}")
 
     if use_extended_qa:
@@ -721,12 +672,6 @@ def main():
         dataset = json.load(open(os.path.join(dataset_dir, f"{dataset_name}.json")))
 
     training_set = dataset[:N]
-
-    # I know it looks silly but it's for backward compatability :(
-    if kb_token_layer_frequency is None:
-        actual_kb_token_layer_frequency = 3
-    else:
-        actual_kb_token_layer_frequency = kb_token_layer_frequency
 
     # Set up the LLM
     llm_model_spec = model_dir_to_resume if model_dir_to_resume else hf_model_spec
@@ -778,13 +723,19 @@ def main():
         projector_type="linear",
         endpoint_url="",
         out_dim=model.config.hidden_size  # type: ignore
-        * (model.config.num_hidden_layers // actual_kb_token_layer_frequency + 1),  # type: ignore
+        * (model.config.num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
         frozen_base_model=True,
         device=device,
     )
 
     if model_dir_to_resume:
         encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))   
+        kb_config = KBLaMConfig.load(os.path.join(model_dir_to_resume, "kb_config.json"))
+    else:
+        kb_config = KBLaMConfig(
+            sep_query_head=sep_query_head,
+            kb_layer_frequency=kb_token_layer_frequency,
+        )
 
     encoder.train()
 
@@ -798,25 +749,20 @@ def main():
     logger.info("Model ready 🚀")
 
     # Get the training started
-    lr = args.lr
-    prefix_string = get_prefix_str(args)
-    if fine_tune_llm_q:
-        prefix_string += "FineTuneQuery"
-    prefix_string = get_prefix_str(args)
     llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
+
     trainer = Trainer(
         model,  # type: ignore
         kbretriever,
         tokenizer,
-        actual_kb_token_layer_frequency,
+        kb_token_layer_frequency,
         total_steps,
-        lr,
+        args.lr,
         device,
         use_lr_decay,
         kb_size,  # type: ignore
         llm_ckpt_name,
         model_save_dir,
-        fine_tune_llm_q=fine_tune_llm_q,
         sep_query_head=sep_query_head,
     )
 
@@ -826,12 +772,13 @@ def main():
         training_set,
         B,
         gradient_accm_step,
-        outlier_ratio,
+        outlier_num,
         use_data_aug=use_data_aug,
         multi_entities=multi_entities,
         use_extended_qa=use_extended_qa,
-        save_period=100,
-        resumed_step=resumed_step
+        save_period=500,
+        resumed_step=resumed_step,
+        kb_config=kb_config,
     )
 
 
