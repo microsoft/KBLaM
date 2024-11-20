@@ -544,6 +544,7 @@ def eval_generate():
     query_head_path = args.query_head_path
     use_mlflow = args.mlflow
     save_dir = args.log_save_dir
+    remove_sorry = args.remove_sorry
 
     validation_part_start_idx = 120000 if 'gpt' in test_dataset else 0
 
@@ -629,6 +630,7 @@ def eval_generate():
         kb_scale_factor=kb_scale_factor,
         config_name=f"kb_size_{kb_size}",
         use_mlflow=use_mlflow,
+        remove_sorry=remove_sorry,
     )
     mem_cost = torch.cuda.max_memory_reserved('cuda')
     score_output.append(mem_cost)
