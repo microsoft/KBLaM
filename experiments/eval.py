@@ -18,7 +18,7 @@ from transformers import AutoTokenizer, logging
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
-from kblam.models.llama_model import KblamLlamaForCausalLM
+from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa
 from kblam.utils.train_utils import get_kb_embd
@@ -687,6 +687,7 @@ def eval_accuracy(
     query_head_path,
     save_dir,
     attn_save_dir,
+    kb_config=None,
     model=None,
     dataset=None,
     key_embds=None,
@@ -752,12 +753,12 @@ def eval_accuracy(
         model.generation_config.eos_token_id = 128009
         model.eval()
 
-        kb_config = KBLaMConfig(
-            # sep_query_head=True,
-            kb_layer_frequency=kb_layer_frequency,
-            kb_scale_factor=kb_scale_factor,
-            **model.config.to_dict(),
-        )
+        # kb_config = KBLaMConfig(
+        #     sep_query_head=True,
+        #     kb_layer_frequency=kb_layer_frequency,
+        #     kb_scale_factor=kb_scale_factor,
+        #     **model.config.to_dict(),
+        # )
         model.config = kb_config
 
         encoder = KBEncoder(
@@ -802,6 +803,9 @@ def eval_accuracy(
     )
     kb_embedding_real = (kb_embedding_real[0], kb_embedding_real[1])
 
+
+    model.eval()
+
     with torch.autograd.no_grad():
         outputs = model.generate(
             input_ids=input_ids,
@@ -813,16 +817,19 @@ def eval_accuracy(
             save_attention_weights=True,
             attention_save_loc=attn_save_dir,
             attention_file_base_name=exp_config,
+            kb_config=kb_config,
         )
         outputs = tokenizer.batch_decode(outputs.squeeze(), skip_special_tokens=False)
         print(outputs[:10])
 
     accs = []
     with torch.autograd.no_grad():
-        for idx in range(0, 32, kb_layer_frequency):
+        for idx in range(0, 16, kb_layer_frequency):
             weight = np.load(os.path.join(attn_save_dir, f"{exp_config}_{idx}.npy"))[..., :kb_size]
             label = np.arange(test_batch_size)
             weight = weight.reshape(test_batch_size, -1, kb_size)
+            np.save(os.path.join(attn_save_dir, f"{exp_config}_{idx}_debug.npy"), weight)
+
             acc = (weight.sum(1).argmax(1) == label).mean()
             top_5_predictions = torch.topk(torch.from_numpy(weight.sum(1)), 5, dim=1)[1]
             top_5_acc = (top_5_predictions.numpy() == label[:, None]).any(1).mean()

@@ -220,6 +220,7 @@ class KblamLlamaAttention(nn.Module):
         if sep_query_head:
             if kb_kvs is not None:
                 if self.layer_idx % kb_layer_frequency == 0:
+                    #print("Using separate query head, getting attn weights")
                     # If we have pruned the KB tokens, then this quantity should have been computed,
                     # if not, then we compute it here
                     if attn_weights_2 is None:
@@ -238,7 +239,7 @@ class KblamLlamaAttention(nn.Module):
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        #attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         
         if not attn_weights.requires_grad:
             # TODO: Make this function injectable
@@ -251,6 +252,7 @@ class KblamLlamaAttention(nn.Module):
                         attn_weights.to(torch.float32).cpu().detach().numpy(),
                     )
         
+        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         attn_output = torch.matmul(attn_weights, value_states)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
