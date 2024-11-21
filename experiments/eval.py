@@ -394,10 +394,13 @@ parent_parser.add_argument(
 )
 parent_parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate')
 parent_parser.add_argument('--model_dir', type=str, help='Directory containing the model')
+parent_parser.add_argument('--tokenizer_path', type=str, help='Directory containing the tokenizer', default="")
 parent_parser.add_argument('--save_dir', type=str, help='Directory to save outputs')
 parent_parser.add_argument('--seed', type=int, help='Random seed for reproducibility')
 parent_parser.add_argument('--test_dataset', type=str, help='Source of test KB (assumes KV pair format)')
 parent_parser.add_argument('--query_head_path', type=str, default="")
+parent_parser.add_argument('--sep_query_head', dest='sep_query_head', action='store_const', const=True, default=None)
+parent_parser.add_argument('--no-sep_query_head', dest='sep_query_head', action='store_const', const=False)
 parent_parser.add_argument(
     '--mlflow',
     default=False,
@@ -545,6 +548,10 @@ def eval_generate():
     use_mlflow = args.mlflow
     save_dir = args.log_save_dir
     remove_sorry = args.remove_sorry
+    tokenizer_path = args.tokenizer_path
+    sep_query_head = args.sep_query_head
+
+    print("ARGS: ", args)
 
     validation_part_start_idx = 120000 if 'gpt' in test_dataset else 0
 
@@ -560,7 +567,7 @@ def eval_generate():
             'float32'
         )[validation_part_start_idx:]
 
-    tokenizer = AutoTokenizer.from_pretrained(llm_base_dir, trust_remote_code=True, padding_side='left')
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True, padding_side='left')
     tokenizer.pad_token = '^'
 
     if llm_type == "llama3":
@@ -585,6 +592,8 @@ def eval_generate():
             kb_scale_factor=kb_scale_factor,
             **model.config.to_dict(),
         )
+        if sep_query_head is not None:
+            kb_config.sep_query_head = sep_query_head
         model.config = kb_config
     else:
         model = KBLaMPhi3ForCausalLM.from_pretrained(
@@ -665,6 +674,7 @@ def eval_accuracy_cli():
     attn_save_dir = args.attn_save_dir
     seed = args.seed
     use_mlflow = args.mlflow
+    sep_query_head = args.sep_query_head
 
     test_batch_size = min(test_batch_size, kb_size)
 
@@ -690,6 +700,7 @@ def eval_accuracy_cli():
         save_dir=save_dir,
         attn_save_dir=attn_save_dir,
         use_mlflow=use_mlflow,
+        sep_query_head=sep_query_head,
     )
 
 
@@ -711,6 +722,7 @@ def eval_accuracy(
     query_head_path,
     save_dir,
     attn_save_dir,
+    sep_query_head=None,
     model=None,
     dataset=None,
     key_embds=None,
@@ -777,11 +789,12 @@ def eval_accuracy(
         model.eval()
 
         kb_config = KBLaMConfig(
-            # sep_query_head=True,
             kb_layer_frequency=kb_layer_frequency,
             kb_scale_factor=kb_scale_factor,
             **model.config.to_dict(),
         )
+        if sep_query_head is not None:
+            kb_config.sep_query_head = sep_query_head
         model.config = kb_config
 
         encoder = KBEncoder(
