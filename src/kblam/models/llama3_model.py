@@ -118,7 +118,7 @@ class KblamLlamaAttention(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         kb_kvs: Optional[tuple] = None,
         kb_config: Optional[KBLaMConfig] = None,
-        save_attention_weights: bool = False,
+        save_attention_weights: bool = True,
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # will become mandatory in v4.46
@@ -242,10 +242,12 @@ class KblamLlamaAttention(nn.Module):
         
         if not attn_weights.requires_grad:
             # TODO: Make this function injectable
+            # print("CHECKING SAVE_ATTENTION_WEIGHTS", save_attention_weights)
             if save_attention_weights:
                 if q_len > 1:
+                    save_path = os.path.join(attention_save_loc, f'{attention_file_base_name}_{self.layer_idx}.npy')
                     np.save(
-                        os.path.join(attention_save_loc, f'{attention_save_loc}_{self.layer_idx}.npy'),
+                        save_path,
                         attn_weights.to(torch.float32).cpu().detach().numpy(),
                     )
         
@@ -757,6 +759,7 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
