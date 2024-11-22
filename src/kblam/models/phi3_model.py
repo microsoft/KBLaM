@@ -15,6 +15,7 @@
 
 """ PyTorch Phi-3 model."""
 
+import copy
 import inspect
 import math
 import os
@@ -360,7 +361,7 @@ class KBLaMPhi3Attention(nn.Module):
         # repeat k/v heads if n_kv_heads < n_heads
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
-
+        # print("KB CONFIG:", kb_config)
         kb_layer_frequency = kb_config.kb_layer_frequency
 
         # Here we add the kb key values to the key and value states
@@ -505,6 +506,7 @@ class Phi3DecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Rectangular Attention
+        # print("KB_CONFIG(Decoder layer): ", kb_config)
         attn_outputs, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
@@ -799,6 +801,7 @@ class Phi3Model(Phi3PreTrainedModel):
                     attention_file_base_name,
                 )
             else:
+                # print("KB CONFIG AT PHI MODEL:", kb_config)
                 layer_outputs = decoder_layer(
                     hidden_states,
                     attention_mask=attention_mask,
@@ -900,7 +903,7 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[tuple] = None,
-        kb_config: Optional[KBLaMConfig] = None,
+        kb_config=None,
         save_attention_weights: bool = False,
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
@@ -939,7 +942,7 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         # print(f"{attention_save_loc} {attention_file_base_name} {save_attention_weights}")
-        # print(kb_config)
+        # print("KB CONFIG (kblamphi3 for causal lm):", kb_config)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -951,7 +954,7 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             kb_kvs=kb_kvs,
-            kb_config=kb_config,
+            kb_config=self.config if kb_config is None else kb_config,
             save_attention_weights=save_attention_weights,
             attention_save_loc=attention_save_loc,
             attention_file_base_name=attention_file_base_name,
@@ -1038,10 +1041,16 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
                 position_ids = position_ids[:, -input_ids.shape[1] :]
 
         # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        model_inputs = copy.copy(kwargs)
+        del model_inputs["cache_position"]
+        # print(model_inputs)
+
         if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
+            # model_inputs = {"inputs_embeds": inputs_embeds}
+            model_inputs["inputs_embeds"] = inputs_embeds
         else:
-            model_inputs = {"input_ids": input_ids}
+            # model_inputs = {"input_ids": input_ids}
+            model_inputs["input_ids"] = input_ids.contiguous()
 
         model_inputs.update(
             {
@@ -1054,7 +1063,6 @@ class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
                 "save_attention_weights": save_attention_weights,
                 "attention_save_loc": attention_save_loc,
                 "attention_file_base_name": attention_file_base_name,
-
             }
         )
         return model_inputs

@@ -602,9 +602,17 @@ def eval_generate():
             torch_dtype="auto",
             trust_remote_code=True,
         )
+        kb_config = KBLaMConfig(
+            kb_layer_frequency=kb_layer_frequency,
+            kb_scale_factor=kb_scale_factor,
+            **model.config.to_dict(),
+        )
+        if sep_query_head is not None:
+            kb_config.sep_query_head = sep_query_head
+        model.config = kb_config
 
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    model.generation_config.eos_token_id = 128009
+    model.generation_config.eos_token_id = tokenizer.eos_token_id
     model.eval()
 
     encoder = KBEncoder(
@@ -675,6 +683,7 @@ def eval_accuracy_cli():
     seed = args.seed
     use_mlflow = args.mlflow
     sep_query_head = args.sep_query_head
+    tokenizer_path = args.tokenizer_path
 
     test_batch_size = min(test_batch_size, kb_size)
 
@@ -701,6 +710,7 @@ def eval_accuracy_cli():
         attn_save_dir=attn_save_dir,
         use_mlflow=use_mlflow,
         sep_query_head=sep_query_head,
+        tokenizer_path=tokenizer_path,
     )
 
 
@@ -730,6 +740,7 @@ def eval_accuracy(
     tokenizer=None,
     encoder=None,
     use_mlflow=False,
+    tokenizer_path=None,
 ):
     """Evaluate accuracy using KB"""
 
@@ -756,7 +767,9 @@ def eval_accuracy(
         kb_layer_frequency = 3
 
     if model is None:
-        tokenizer = AutoTokenizer.from_pretrained(llm_base_dir, trust_remote_code=True, padding_side="left")
+        tokenizer = AutoTokenizer.from_pretrained(
+            llm_base_dir if tokenizer_path is None else tokenizer_path, trust_remote_code=True, padding_side="left"
+        )
         tokenizer.pad_token = "^"
 
         if llm_type == "llama3":
@@ -785,7 +798,7 @@ def eval_accuracy(
             )
 
         model.generation_config.pad_token_id = tokenizer.pad_token_id
-        model.generation_config.eos_token_id = 128009
+        model.generation_config.eos_token_id = tokenizer.eos_token_id
         model.eval()
 
         kb_config = KBLaMConfig(
@@ -930,7 +943,7 @@ def eval_refusal():
         )
 
     model.generation_config.pad_token_id = tokenizer.pad_token_id
-    model.generation_config.eos_token_id = 128009
+    model.generation_config.eos_token_id = tokenizer.eos_token_id
     model.eval()
 
     encoder = KBEncoder(
