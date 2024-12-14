@@ -3,6 +3,8 @@ import torch
 from torch.nn import CrossEntropyLoss
 import argparse
 
+from torch.optim.optimizer import ParamsT
+
 
 def get_tensor_config(x: torch.tensor) -> dict[str, any]:
     return {"dtype": x.dtype, "layout": x.layout, "device": x.device}
@@ -148,13 +150,23 @@ def compute_perplexity_gain(model, kb, input_ids, attention_mask, labels):
     return unconditioned_nll, conditioned_nll  # Loss should decrease
 
 
-def context_set_size_scheduler(epoch: int, kb_size: str | int) -> int:
-    """Determines the KB size for the current training step """
+def context_set_size_scheduler(curr_step: int, kb_size: list[int] | int | str) -> int:
+    """Determines the KB size for the current training step. 
+        The KB size can be a fixed number, a list of numbers or a "dynamic" value.
+        If no KB size is provided, the KB size is dynamicly increased every 100 steps."""
+    
+    dynamic_range = (10, 200)
     if kb_size == "dynamic":
-        return np.random.randint(10, 200)
+        return np.random.randint(dynamic_range[0], dynamic_range[1])
+
+    if isinstance(kb_size, list):
+        return np.random.randint(kb_size[0], kb_size[1])
+
+    increase_kb_size_every = 100
     if not kb_size:
-        round = (epoch) // 100
+        round = (curr_step) // increase_kb_size_every
         return 4 * (round + 1)
+
     return kb_size
 
 
@@ -183,3 +195,9 @@ def get_prefix_str(args: argparse.Namespace) -> str:
     if args.use_data_aug:
         prefix_string += "UseDataAug"
     return prefix_string
+
+def setup_scheduler_and_optimizer(model_parapmeters: ParamsT, lr: float, max_iter: int) -> tuple:
+    optim = torch.optim.AdamW(model_parapmeters, lr=lr, weight_decay=0.0)  # type: ignore
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max_iter, eta_min=lr * 0.01)  # type: ignore
+    return scheduler, optim

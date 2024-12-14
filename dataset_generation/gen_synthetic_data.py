@@ -12,7 +12,7 @@ from kblam.utils.data_utils import DataPoint, Entity, save_entity
 
 
 def construct_prompts(entity: DataPoint) -> tuple[str, str, str]:
-    """Take in an entity, return constructed question, anwer and key name."""
+    """Given a data point, creates a question, answer and key string."""
     Q = "What is the {} of {}?".format(entity.description_type, entity.name)
     A = f"The {entity.description_type} of {entity.name} is {entity.description}."
     key_string = f"the {entity.description_type} of {entity.name}"
@@ -185,7 +185,9 @@ class SyntheticDataGenerator(GPT):
         return entity
 
     def generate_related_data(self, entity: Entity) -> Entity:
-        instruction = f"Generate a person name related to the entity {entity.name} with description {entity.description}."
+        instruction = (
+            f"Generate a person name related to the entity {entity.name} with description {entity.description}."
+        )
         instruction += "The person needs to be associated with the entity in some way. e.g. they work in the company or they are a character in the book."
         instruction += f"Make sure the entity is in the format of {self.entity_format_prompt}"
 
@@ -227,7 +229,6 @@ class SyntheticDataGenerator(GPT):
             try:
                 prompt = "Generate an extended Q and an A for this pair: " + f"Q: {data.Q}\nA: {data.A}"
                 gpt_output = self.generate_response(prompt)
-                print(gpt_output)
                 extended_q = re.findall(r"Q: (.*)", gpt_output)[0]
                 extended_a = re.findall(r"A: (.*)", gpt_output)[0]
                 data.extended_Q = extended_q
@@ -237,7 +238,6 @@ class SyntheticDataGenerator(GPT):
                 print(e)
                 continue
         return dataset
-    
 
     def perturb_names(self, dataset: list[DataPoint]):
         for data in dataset:
@@ -252,8 +252,6 @@ class SyntheticDataGenerator(GPT):
                 print(e)
                 continue
         return dataset
-
-
 
 
 def parser_args():

@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -9,9 +10,9 @@ from azure.identity import (
     get_bearer_token_provider,
 )
 from openai import AzureOpenAI
-import argparse
 
 valid_models = ["gpt-4o", "ada-embeddings", "text-embedding-3-large"]
+
 
 class GPT:
     def __init__(
@@ -29,9 +30,7 @@ class GPT:
         seed: int = None,
     ):
         if model_name not in valid_models:
-            raise ValueError(
-                f"Invalid model: {model_name}. Valid models are: {valid_models}"
-            )
+            raise ValueError(f"Invalid model: {model_name}. Valid models are: {valid_models}")
 
         token_provider = get_bearer_token_provider(
             self._get_credential(), "https://cognitiveservices.azure.com/.default"
@@ -64,9 +63,7 @@ class GPT:
             auth_record_root_path = Path.home()
 
         auth_record_path = auth_record_root_path / lib_name / "auth_record.json"
-        cache_options = TokenCachePersistenceOptions(
-            name=f"{lib_name}.cache", allow_unencrypted_storage=True
-        )
+        cache_options = TokenCachePersistenceOptions(name=f"{lib_name}.cache", allow_unencrypted_storage=True)
 
         if auth_record_path.exists():
             with open(auth_record_path, "r") as f:
@@ -103,9 +100,7 @@ class GPT:
 
     def _api_call_embedding(self, text: str) -> list[float] | None:
         for _ in range(self.max_retries):
-            embedding = self.OA_client.embeddings.create(
-                input=text, model=self.model_name
-            )
+            embedding = self.OA_client.embeddings.create(input=text, model=self.model_name)
             if embedding:
                 return embedding.data[0].embedding
         return None

@@ -10,8 +10,8 @@ retrieval modules, and unlike in-context learning, its computational overhead sc
 
 ## Supported Models
 The following models from HuggingFace hub are currently supported:
- - [meta-llama/Meta-Llama-3-8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B)
  - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
+ - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
  - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
 
 To add support for new model types, you will need to update the model processing scripts to incorporate an adapter similar to `llama_model.py` in `src/kblam/models`.
@@ -56,7 +56,7 @@ The embeddings we current support are [text-embedding-ada-002](https://openai.co
 To train the model, run the following (with the appropriate arguments):
 
 ```
-python train.py --dataset avocado_new --N 120000 --B 20 --steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug
+python train.py --dataset synthetic_data --N 120000 --B 20 --total_steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug
 ```
 
 ## Contributing

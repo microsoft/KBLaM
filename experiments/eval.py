@@ -22,6 +22,17 @@ from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa
+from kblam.utils.eval_utils import (
+    instruction_prompts,
+    instruction_prompts_multi_entities,
+    zero_shot_prompt,
+    zero_shot_prompt_multi_entities,
+    _format_Q_llama,
+    _format_Q_phi3,
+    model_prune_format_mapping,
+    answer_question,
+    softmax
+)
 from kblam.utils.train_utils import get_kb_embd
 
 nltk.download('wordnet')
@@ -29,92 +40,6 @@ logging.set_verbosity_warning()
 
 rouge = evaluate.load('rouge')
 bert_score = evaluate.load('bertscore')
-
-instruction_prompts = '''
-Please answer questions based on the given text with format: "The {property} of {name} is {description}"
-'''
-
-instruction_prompts_multi_entities = '''
-Please answer questions based on the given text with format: "The {property} of {name1} is {description}; The {property} of {name2} is {description}; ..."
-'''
-
-zero_shot_prompt = '''
-Please answer the question in a very compact manner with format: The {property} of {name} is {description}
-'''
-
-zero_shot_prompt_multi_entities = '''
-Please answer the question in a very compact manner with format: "The {property} of {name1} is {description}; The {property} of {name2} is {description}; ...
-'''
-
-
-def softmax(x, axis):
-    """Compute softmax values for each sets of scores in x."""
-    e_x = np.exp(x - np.max(x))
-    return e_x / e_x.sum(axis=axis)
-
-
-def _format_Q_llama(Q: str):
-    return (
-        "<|start_header_id|>user<|end_header_id|> " + Q + "<|eot_id|>" + "<|start_header_id|>assistant<|end_header_id|>"
-    )
-
-
-def _format_Q_phi3(Q: str):
-    return "<|user|>\n" + Q + "<|end|>\n" + "<|assistant|>\n"
-
-
-model_question_format_mapping = {KblamLlamaForCausalLM: _format_Q_llama, KBLaMPhi3ForCausalLM: _format_Q_phi3}
-
-
-def _prune_for_llama(S):
-    S = S.replace('<|eot_id|>', '')
-    S = S.replace('<|start_header_id|>assistant<|end_header_id|>', '')
-    S = S.replace('<|start_header_id|>user<|end_header_id|>', '')
-    S = S.replace('<|end_of_text|>', '')
-    return S
-
-
-def _prune_for_phi3(S):
-    S = S.replace('<|end|>', '')
-    S = S.replace('<|assistant|>', '')
-    S = S.replace('<|user|>', '')
-    return S
-
-
-model_prune_format_mapping = {KblamLlamaForCausalLM: _prune_for_llama, KBLaMPhi3ForCausalLM: _prune_for_phi3}
-
-
-def answer_question(
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
-    Q: str,
-    kb=None,
-    topk_size: int | None = None,
-    kb_config:Optional[KBLaMConfig]=None
-):
-    for m in model_question_format_mapping:
-        if isinstance(model, m):
-            input_str = model_question_format_mapping[m](Q)
-    tokenizer_output = tokenizer(input_str, return_tensors='pt', padding=True).to('cuda')
-    input_ids, attention_masks = tokenizer_output['input_ids'], tokenizer_output['attention_mask']
-
-    with torch.autograd.no_grad():
-
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_masks,
-            kb_kvs=kb,
-            max_new_tokens=150,
-            tokenizer=tokenizer,
-            output_attentions=True,
-            kb_config=kb_config
-        ).squeeze()
-    outputs = tokenizer.decode(outputs, skip_special_tokens=False)
-
-    for m in model_prune_format_mapping:
-        if isinstance(model, m):
-            pruned_output = model_prune_format_mapping[m](outputs)
-    return pruned_output
 
 
 class KBRetriever:
@@ -207,12 +132,7 @@ def perform_eval(
 
         if eval_mode == 'kb':
             model_output = answer_question(
-                tokenizer,
-                model,
-                Q,
-                kb=kb_embedding,
-                topk_size=topk_size,
-                kb_config=kb_config
+                tokenizer, model, Q, kb=kb_embedding, topk_size=topk_size, kb_config=kb_config
             ).split(Q)[1]
         elif eval_mode == 'icl':
             if multi_entites != -1:
@@ -220,24 +140,14 @@ def perform_eval(
             else:
                 ins_prompt = instruction_prompts
             model_output = answer_question(
-                tokenizer, 
-                model, 
-                ins_prompt + prompt_strs + Q, 
-                kb=None,
-                kb_config=kb_config
+                tokenizer, model, ins_prompt + prompt_strs + Q, kb=None, kb_config=kb_config
             ).split(Q)[1]
         elif eval_mode == 'zeroshot':
             if multi_entites != -1:
                 ins_prompt = zero_shot_prompt_multi_entities
             else:
                 ins_prompt = zero_shot_prompt
-            model_output = answer_question(
-                tokenizer, 
-                model, 
-                ins_prompt + Q, 
-                kb=None,
-                kb_config=kb_config
-            ).split(Q)[1]
+            model_output = answer_question(tokenizer, model, ins_prompt + Q, kb=None, kb_config=kb_config).split(Q)[1]
         # print(model_output)
         if remove_sorry:
             if 'sorry' in model_output:
@@ -265,7 +175,7 @@ def perform_eval(
     rouge_scores = rouge.compute(predictions=model_outputs, references=answers)
     print(rouge_scores)
 
-    results_dict = {k:float(v) for k, v in rouge_scores.items()}
+    results_dict = {k: float(v) for k, v in rouge_scores.items()}
 
     bertscore = bert_score.compute(
         predictions=model_outputs, references=answers, lang="en", model_type='microsoft/deberta-xlarge-mnli'
@@ -290,7 +200,7 @@ def perform_eval_refusal(
     model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
     tokenizer: transformers.PreTrainedTokenizer,
     kb_retriever: KBRetriever,
-    kb_config:Optional[KBLaMConfig]=None,
+    kb_config: Optional[KBLaMConfig] = None,
     eval_mode: str = 'kb',
     kb_size: int = 250,
     seed: int = 1,
@@ -357,7 +267,9 @@ def perform_eval_refusal(
                 zero_shot_prompt + Q,
                 kb=None,
                 kb_config=kb_config,
-            ).split(Q)[1]
+            ).split(
+                Q
+            )[1]
         model_outputs.append(model_output)
         if i < change_point:
             answers.append(row["description"])
@@ -655,7 +567,6 @@ def eval_accuracy(
 ):
     """Evaluate accuracy using KB"""
 
-
     if kb_size == len(dataset):
         dataset_subset_idx = range(len(dataset))
     elif kb_size > len(dataset):
@@ -692,7 +603,7 @@ def eval_accuracy(
             save_attention_weights=True,
             kb_config=kb_config,
             attention_save_loc=attn_save_dir,
-            attention_file_base_name=exp_config
+            attention_file_base_name=exp_config,
         )
         outputs = tokenizer.batch_decode(outputs.squeeze(), skip_special_tokens=False)
 
@@ -883,7 +794,7 @@ def run_accuracy_evalution():
 
 
 def eval_refusal():
-    "Evaluate refusal to answer questions the KB is not relevant for"
+    """Evaluate refusal to answer questions for which the answer does not exist in the KB"""
     args = parser.parse_args()
     dataset_dir = args.dataset_dir
     encoder_model_spec = args.encoder_spec
@@ -1045,7 +956,7 @@ def eval():
                 max_new_tokens=40,
                 tokenizer=tokenizer,
                 output_attentions=False,
-                kb_config=kb_config
+                kb_config=kb_config,
             )
 
             outputs_true_kb = model.generate(
@@ -1058,7 +969,7 @@ def eval():
                 save_attention_weights=True,
                 attention_save_loc=output_dir,
                 attention_file_base_name=config_str,
-                kb_config=kb_config
+                kb_config=kb_config,
             )
         print("decoding")
         outputs_no_kb = tokenizer.batch_decode(outputs_no_kb, skip_special_tokens=False)

@@ -13,26 +13,17 @@ import torch
 import transformers
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from rich.theme import Theme
 from torch.nn import CrossEntropyLoss
-from torch.optim.optimizer import ParamsT
 from transformers import AutoTokenizer
 
 from kblam.kb_encoder import KBEncoder
+from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
-from kblam.models.kblam_config import KBLaMConfig
-from kblam.utils.data_utils import aug_row, generate_multi_entity_qa, get_i_dont_know_ans
-from kblam.utils.train_utils import get_kb_embd, context_set_size_scheduler, get_prefix_str
-
+from kblam.utils.data_utils import augment_row, generate_multi_entity_qa, get_i_dont_know_ans
+from kblam.utils.train_utils import context_set_size_scheduler, get_kb_embd, get_prefix_str, setup_scheduler_and_optimizer
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGFORMAT_RICH = "%(message)s"
@@ -214,7 +205,7 @@ def get_batch(
     else:
         batch_indices = np.arange(B)
 
-    def get_question_and_answer(idx):
+    def get_question_and_answer(idx: int) -> tuple[str, str]:
         if use_extended_qa:
             Q, A = dataset[idx]["extended_Q"], dataset[idx]["extended_A"]
 
@@ -225,8 +216,7 @@ def get_batch(
                 [dataset[i]["description"] for i in idx],
             )
         else:
-            Q = aug_row(dataset[idx]) if use_data_aug else dataset[idx]["Q"]
-            # Maybe we can replace this with gpt_augment(answer_str)
+            Q = augment_row(dataset[idx]) if use_data_aug else dataset[idx]["Q"]
             A = get_i_dont_know_ans() if include_outlier else dataset[idx]["A"]
         return Q, A
 
@@ -248,13 +238,12 @@ def get_batch(
     return input_ids, attention_masks, labels, batch_indices
 
 
-
 def get_prefix_str(args):
     use_data_aug = args.use_data_aug
     sep_query_head = args.sep_query_head
     kb_size = args.kb_size
     dynamic_kb_size = args.dynamic_kb_size
-    
+
     if dynamic_kb_size is not None:
         kb_size = "dynamic"  # Random size
 
@@ -289,7 +278,6 @@ def get_prefix_str(args):
     return prefix_string
 
 
-
 def _load_cached_embeddigns(encoder_model_spec: str, dataset_dir: str, dataset_name: str, key_embd_src: str):
 
     if encoder_model_spec == "OAI":
@@ -318,18 +306,6 @@ def _load_cached_embeddigns(encoder_model_spec: str, dataset_dir: str, dataset_n
             )
         ).astype("float32")
     return key_embds, value_embds
-
-
-def context_set_size_scheduler(epoch: int, kb_size: List[int] | int) -> int:
-    """Determines the KB size for the current training step"""
-    if isinstance(kb_size, list):
-        return np.random.randint(kb_size[0], kb_size[1])
-    
-    if not kb_size:
-        round = (epoch) // 100
-        return 4 * (round + 1)
-    
-    return kb_size
 
 
 def get_step_config(
@@ -489,13 +465,6 @@ class KBRetriever:
         return kb_embedding
 
 
-def _setup_scheduler_and_optimizer(model_parapmeters: ParamsT, lr: float, max_iter: int):
-    optim = torch.optim.AdamW(model_parapmeters, lr=lr, weight_decay=0.0)  # type: ignore
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max_iter, eta_min=lr * 0.01)  # type: ignore
-    return scheduler, optim
-
-
 class Trainer:
     def __init__(
         self,
@@ -507,7 +476,7 @@ class Trainer:
         lr: float,
         device: torch.device,
         use_lr_decay: bool,
-        kb_size: int|List[int],
+        kb_size: int | List[int],
         llm_savename: str,
         output_dir: str,
         sep_query_head: bool = False,
@@ -541,14 +510,14 @@ class Trainer:
         if self.sep_query_head:
             self.logger.info("Query head being fine tuned!")
             llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
-            scheduler, optim = _setup_scheduler_and_optimizer(
+            scheduler, optim = setup_scheduler_and_optimizer(
                 chain(self.kbretriever.encoder.parameters(), llm_q_params),
                 self.lr,
                 self.num_steps,
             )
             self.logger.info("Optimizer recreated")
         else:
-            scheduler, optim = _setup_scheduler_and_optimizer(
+            scheduler, optim = setup_scheduler_and_optimizer(
                 self.kbretriever.encoder.parameters(), self.lr, self.num_steps
             )
             self.logger.info("Optimizer recreated")
@@ -571,7 +540,6 @@ class Trainer:
         start_step = resumed_step
 
         loss_fct = CrossEntropyLoss(reduction="none")
-
 
         with create_custom_progress_bar(console=console) as pbar:
             task = pbar.add_task("Training", total=self.num_steps, loss=100)
@@ -604,7 +572,7 @@ class Trainer:
                         attention_mask=attention_masks,
                         kb_kvs=kb_embedding,
                         output_attentions=True,
-                        kb_config=kb_config
+                        kb_config=kb_config,
                     )
                     logits = out["logits"]
 
@@ -626,7 +594,7 @@ class Trainer:
                     shift_logits = shift_logits.view(-1, self.model.config.vocab_size)
                     shift_labels = shift_labels.view(-1)
                     weights = weights.view(-1)
-                    
+
                     shift_labels = shift_labels.to(shift_logits.device)
 
                     loss = (
@@ -799,7 +767,7 @@ def main():
     )
 
     if model_dir_to_resume:
-        encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))   
+        encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))
         kb_config = KBLaMConfig.from_pretrained(os.path.join(model_dir_to_resume, "kb_config.json"))
     else:
         kb_config = KBLaMConfig(

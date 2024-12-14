@@ -1,6 +1,7 @@
-import numpy as np
 import json
 from dataclasses import dataclass
+
+import numpy as np
 
 
 @dataclass
@@ -24,7 +25,7 @@ class DataPoint:
 
 
 def save_entity(pair: Entity | DataPoint, output_file: str) -> None:
-    """Save an entity to a file."""
+    """Save a JSON entity to a file."""
     try:
         with open(output_file, "a+") as f:
             json.dump(pair.__dict__, f)
@@ -52,7 +53,8 @@ def get_i_dont_know_ans():
     return "I am sorry I cannot find relevant information in the KB."
 
 
-def aug_row(row: dict[str, str]) -> list[dict[str, str]]:
+def augment_row(row: dict[str, str]) -> list[dict[str, str]]:
+    """Augment an entity with questions from pre-defined templates."""
     templates = [
         "What {} does {} have?",
         "What is the {} of {}?",
@@ -77,10 +79,9 @@ def aug_row(row: dict[str, str]) -> list[dict[str, str]]:
     return templates[tid].format(dtype, name)
 
 
-def generate_multi_entity_qa(
-    names: list[str], properties: list[str], answers: list[str]
-) -> list[str]:
-    question_heads = [
+def generate_multi_entity_qa(names: list[str], properties: list[str], answers: list[str]) -> tuple[str, str]:
+    """Generate a question-answer pair for multiple entities."""
+    templates = [
         "What is {}?",
         "Tell me {}.",
         "Can you let me know {}?",
@@ -95,9 +96,7 @@ def generate_multi_entity_qa(
         "Could you give me a detailed description of {}?",
         "I need more information on {}.",
     ]
-    assert len(names) == len(properties)
-    assert len(properties) == len(answers)
-    tid = np.random.randint(0, len(question_heads))
+    template_idx = np.random.randint(0, len(templates))
     question_body = ""
     for name, property in zip(names[:-1], properties[:-1]):
         question_body += f"the {property} of {name},"
@@ -105,4 +104,4 @@ def generate_multi_entity_qa(
     answer_str = ""
     for answer, name, property in zip(answers, names, properties):
         answer_str += f"The {property} of {name} is {answer}; "
-    return question_heads[tid].format(question_body), answer_str.strip()
+    return templates[template_idx].format(question_body), answer_str.strip()
