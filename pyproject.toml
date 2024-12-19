@@ -2,8 +2,8 @@
 # Licensed under the MIT license.
 
 [build-system]
-requires = ["setuptools>=42.0.0", "setuptools-scm"]
-build-backend = "setuptools.build_meta"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [project]
 name = "kblam"
@@ -82,3 +82,6 @@ disable = [
 
 [tool.pylint.basic]
 docstring-min-length = 10
+
+[tool.pdm.build]
+includes = ["src"]
