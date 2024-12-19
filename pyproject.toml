@@ -38,6 +38,12 @@ dev = [
     "pre-commit",
     "pylint>=3.0.0",
     "pytest>=7.4.2",
+    "codespell",
+    "coverage",
+    "ipykernel",
+    "jinja2",
+    "ruff",
+    "pyright",
 ]
 
 experiment = [
