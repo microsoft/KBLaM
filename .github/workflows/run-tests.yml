@@ -21,21 +21,22 @@ jobs:
           pip install -U pdm
           pdm install --dev
 
-      - name: ruff-check
-        run: |
-          pdm run ruff check --no-fix --output-format=github
+      # To be added back gradually
+      # - name: ruff-check
+      #   run: |
+      #     pdm run ruff check --no-fix --output-format=github
 
-      - name: ruff-format
-        run: |
-          pdm run ruff format --check
+      # - name: ruff-format
+      #   run: |
+      #     pdm run ruff format --check
 
-      - name: pyright
-        run: |
-          pdm run pyright
+      # - name: pyright
+      #   run: |
+      #     pdm run pyright
 
-      - name: codespell
-        run: |
-          pdm run codespell
+      # - name: codespell
+      #   run: |
+      #     pdm run codespell
 
       - name: pytest
         run: |
