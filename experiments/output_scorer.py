@@ -20,7 +20,7 @@ def save_example(example: EvalExample, output_file: str) -> None:
             json.dump(example.__dict__, f)
             f.write("\n")
     except Exception as e:
-        print(f"Error saving example.")
+        print("Error saving example.")
         print(e)
 
 
@@ -51,7 +51,9 @@ class Evaluator(GPT):
 
                             **Important**: Only generate a number.
                             """
-        self.prompt += "\n Score the following text: \n model prediction: {0}, \n true answer: {1}"
+        self.prompt += (
+            "\n Score the following text: \n model prediction: {0}, \n true answer: {1}"
+        )
         self.seed = 42
         super().__init__(model, endpoint_url, **kwargs)
 
@@ -65,12 +67,16 @@ class Evaluator(GPT):
         eval_examples = []
         for example in examples:
             try:
-                text = example.split("True answer:")[0].replace("Model output:", "").strip()
+                text = (
+                    example.split("True answer:")[0]
+                    .replace("Model output:", "")
+                    .strip()
+                )
                 true_answer = example.split("True answer:")[1].strip()
                 eval_example = self.evaluate_output(self.prompt, text, true_answer)
                 eval_examples.append(eval_example)
             except Exception as e:
-                print(f"Error evaluating example.")
+                print("Error evaluating example.")
                 print(e)
         return eval_examples
 
@@ -79,9 +85,17 @@ def parser_args():
     parser = argparse.ArgumentParser(description="GPT Session")
     parser.add_argument("--model", type=str, default="GPT4", help="The model to use.")
     parser.add_argument("--endpoint_url", type=str, help="The endpoint url.")
-    parser.add_argument("--predictions_file", type=str, default="llama.txt", help="The input file with examples.")
     parser.add_argument(
-        "--output_file", type=str, default="eval_examples1.json", help="The output file to save the examples."
+        "--predictions_file",
+        type=str,
+        default="llama.txt",
+        help="The input file with examples.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        default="eval_examples1.json",
+        help="The output file to save the examples.",
     )
     return parser.parse_args()
 

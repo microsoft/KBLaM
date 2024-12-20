@@ -20,14 +20,21 @@ def parser_args():
     )
     parser.add_argument("--dataset_name", type=str, default="synthetic_data")
     parser.add_argument("--endpoint_url", type=str)
-    parser.add_argument("--dataset_path", type=str, required=False, help="Path to the dataset in JSON format.")
+    parser.add_argument(
+        "--dataset_path",
+        type=str,
+        required=False,
+        help="Path to the dataset in JSON format.",
+    )
     parser.add_argument("--output_path", type=str, default="dataset")
 
     args = parser.parse_args()
     return args
 
 
-def compute_embeddings(encoder_model_spec: str, dataset: list[DataPoint], part: str, batch_size: int = 100) -> np.array:
+def compute_embeddings(
+    encoder_model_spec: str, dataset: list[DataPoint], part: str, batch_size: int = 100
+) -> np.array:
     """Compute embeddings for the given dataset in batches using the encoder model spec."""
     embeddings = []
     all_elements = []
@@ -38,9 +45,12 @@ def compute_embeddings(encoder_model_spec: str, dataset: list[DataPoint], part: 
             all_elements.append(entity.description)
         else:
             raise ValueError(f"Part {part} not supported.")
-    chunks = [all_elements[i : i + batch_size] for i in range(0, len(all_elements), batch_size)]
+    chunks = [
+        all_elements[i : i + batch_size]
+        for i in range(0, len(all_elements), batch_size)
+    ]
 
-    model = SentenceTransformer(encoder_model_spec, device='cuda')
+    model = SentenceTransformer(encoder_model_spec, device="cuda")
     for chunk in tqdm(chunks):
         embd = model.encode(chunk, convert_to_numpy=True)
         embeddings.append(embd)
@@ -79,5 +89,11 @@ if __name__ == "__main__":
     else:
         save_name = "BigOAI"
 
-    np.save(f'{args.output_path}/{args.dataset_name}_{save_name}_embd_key.npy', np.array(key_embeds))
-    np.save(f'{args.output_path}/{args.dataset_name}_{save_name}_embd_value.npy', np.array(value_embeds))
+    np.save(
+        f"{args.output_path}/{args.dataset_name}_{save_name}_embd_key.npy",
+        np.array(key_embeds),
+    )
+    np.save(
+        f"{args.output_path}/{args.dataset_name}_{save_name}_embd_value.npy",
+        np.array(value_embeds),
+    )

@@ -1,5 +1,4 @@
 from typing import Union
-import numpy as np
 from transformers.processing_utils import ProcessorMixin
 from transformers import AutoTokenizer
 from transformers.tokenization_utils_base import PreTokenizedInput, TextInput
@@ -38,9 +37,10 @@ class KBLaMProcessor(ProcessorMixin):
             encoder_name=args.encoder_name,
             projector_type=args.projector_type,
             endpoint_url=args.endpoint_url,
-            out_dim=args.hidden_size * (args.num_hidden_layers // args.kb_layer_frequency + 1),
+            out_dim=args.hidden_size
+            * (args.num_hidden_layers // args.kb_layer_frequency + 1),
             frozen_base_model=True,
-            projector_kwargs={'mlp_depth': 1, 'mlp_hidden_dim': 512},
+            projector_kwargs={"mlp_depth": 1, "mlp_hidden_dim": 512},
             get_oai_embd_online=False,
         )
 
@@ -50,20 +50,35 @@ class KBLaMProcessor(ProcessorMixin):
     def __call__(
         self,
         knowledge_base: list[tuple[torch.Tensor]] | list[tuple[str]] = None,
-        text: Union[TextInput, PreTokenizedInput, list[TextInput], list[PreTokenizedInput]] = None,
+        text: Union[
+            TextInput, PreTokenizedInput, list[TextInput], list[PreTokenizedInput]
+        ] = None,
     ) -> BatchFeature:
         # Process the knowledge base if needed
-        if knowledge_base and isinstance(knowledge_base, list) and isinstance(knowledge_base[0][0], torch.Tensor):
+        if (
+            knowledge_base
+            and isinstance(knowledge_base, list)
+            and isinstance(knowledge_base[0][0], torch.Tensor)
+        ):
             knowledge_base = self.kb_encoder.encode_base_embeddings(knowledge_base)
-        elif knowledge_base and isinstance(knowledge_base, list) and isinstance(knowledge_base[0][0], str):
+        elif (
+            knowledge_base
+            and isinstance(knowledge_base, list)
+            and isinstance(knowledge_base[0][0], str)
+        ):
             knowledge_base = self.kb_encoder.encode(knowledge_base)
 
         # Process the text
         input_str = (
-            '<|start_header_id|>user<|end_header_id|> ' + text + '<|eot_id|>' + '<|start_header_id|>assistant<|end_header_id|>'
+            "<|start_header_id|>user<|end_header_id|> "
+            + text
+            + "<|eot_id|>"
+            + "<|start_header_id|>assistant<|end_header_id|>"
         )
 
-        text_inputs = self.tokenizer(input_str, return_tensors='pt', padding=True).to(self.device)
+        text_inputs = self.tokenizer(input_str, return_tensors="pt", padding=True).to(
+            self.device
+        )
         return BatchFeature(data={**text_inputs, "kb_kvs": knowledge_base})
 
     def batch_decode(self, *args, **kwargs):

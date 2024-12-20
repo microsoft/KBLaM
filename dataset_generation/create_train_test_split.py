@@ -21,7 +21,11 @@ def _save_array(arr: np.array, filename: str) -> None:
 
 
 def create_train_test_split(
-    data_path: str, embedding_keys_path: str, embeddings_values_path: str, split_index: int, output_path: str
+    data_path: str,
+    embedding_keys_path: str,
+    embeddings_values_path: str,
+    split_index: int,
+    output_path: str,
 ) -> None:
     """Split data into training and test sets and save the results.
 
@@ -64,7 +68,9 @@ def create_train_test_split(
 
     train_dataset_name, test_dataset_name = _create_train_test_names(data_path)
     train_keys_name, test_keys_name = _create_train_test_names(embedding_keys_path)
-    train_values_name, test_values_name = _create_train_test_names(embeddings_values_path)
+    train_values_name, test_values_name = _create_train_test_names(
+        embeddings_values_path
+    )
 
     _write_json(train_dataset, output_p / train_dataset_name)
     _write_json(test_dataset, output_p / test_dataset_name)

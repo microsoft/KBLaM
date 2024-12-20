@@ -23,7 +23,7 @@ def save_example(example: EvalExample, output_file: str) -> None:
             json.dump(example.__dict__, f)
             f.write("\n")
     except Exception as e:
-        print(f"Error saving example.")
+        print("Error saving example.")
         print(e)
 
 
@@ -92,14 +92,14 @@ class Evaluator(GPT):
         Score: 3
         Reason: The model's response is accurate but is not very reasonable.
         """
-        self.prompt_open_ended += (
-            "\n Score the following responce: \n evidence: {0}, question: {1} and \n model response: {2}"
-        )
+        self.prompt_open_ended += "\n Score the following responce: \n evidence: {0}, question: {1} and \n model response: {2}"
 
         self.seed = seed
         super().__init__(model, endpoint_url, **kwargs)
 
-    def evaluate_open_ended(self, prompt, evidence: str, question: str, response: str) -> str:
+    def evaluate_open_ended(
+        self, prompt, evidence: str, question: str, response: str
+    ) -> str:
         prompt = prompt.format(evidence, question, response)
         return self.generate_response(prompt)
 
@@ -119,16 +119,20 @@ class Evaluator(GPT):
                 question = example[question_start:model_output_start].strip()
                 model_output = example[model_output_start:].strip()
 
-                eval_example = self.evaluate_open_ended(self.prompt_open_ended, evidence, question, model_output)
+                eval_example = self.evaluate_open_ended(
+                    self.prompt_open_ended, evidence, question, model_output
+                )
                 score = float(re.search(score_pattern, eval_example).group(1).strip())
                 reason = re.search(reason_pattern, eval_example).group(1).strip()
-                eval_example = EvalExample(evidence, question, model_output, score, reason)
+                eval_example = EvalExample(
+                    evidence, question, model_output, score, reason
+                )
                 eval_examples.append(eval_example)
 
                 save_example(eval_example, args.output_file)
 
             except Exception as e:
-                print(f"Error evaluating example.")
+                print("Error evaluating example.")
                 print(e)
                 return eval_examples
 

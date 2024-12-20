@@ -1,5 +1,5 @@
-from kblam.utils.data_utils import DataPoint, Entity, save_entity, load_entities
-import numpy as np
+from kblam.utils.data_utils import load_entities
+
 
 def test_dataset_QA():
     dataset_path = "tests/test_dataset.json"

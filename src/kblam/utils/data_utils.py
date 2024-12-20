@@ -31,7 +31,7 @@ def save_entity(pair: Entity | DataPoint, output_file: str) -> None:
             json.dump(pair.__dict__, f)
             f.write("\n")
     except Exception as e:
-        print(f"Error saving entity.")
+        print("Error saving entity.")
         print(e)
 
 
@@ -44,7 +44,7 @@ def load_entities(inout_file: str) -> list[Entity | DataPoint]:
                 entity = json.loads(line)
                 entities.append(entity)
     except Exception as e:
-        print(f"Error loading entities.")
+        print("Error loading entities.")
         print(e)
     return entities
 
@@ -79,7 +79,9 @@ def augment_row(row: dict[str, str]) -> list[dict[str, str]]:
     return templates[tid].format(dtype, name)
 
 
-def generate_multi_entity_qa(names: list[str], properties: list[str], answers: list[str]) -> tuple[str, str]:
+def generate_multi_entity_qa(
+    names: list[str], properties: list[str], answers: list[str]
+) -> tuple[str, str]:
     """Generate a question-answer pair for multiple entities."""
     templates = [
         "What is {}?",

@@ -20,7 +20,9 @@ def construct_prompts(entity: DataPoint) -> tuple[str, str, str]:
 
 
 class SyntheticDataGenerator(GPT):
-    def __init__(self, model: AutoModelForCausalLM, endpoint_url: str, **kwargs) -> None:
+    def __init__(
+        self, model: AutoModelForCausalLM, endpoint_url: str, **kwargs
+    ) -> None:
         self.system_prompt = """You are a AI system that generates synthetic data examples in JSON format."""
 
         self.entity_format_prompt = """
@@ -185,11 +187,11 @@ class SyntheticDataGenerator(GPT):
         return entity
 
     def generate_related_data(self, entity: Entity) -> Entity:
-        instruction = (
-            f"Generate a person name related to the entity {entity.name} with description {entity.description}."
-        )
+        instruction = f"Generate a person name related to the entity {entity.name} with description {entity.description}."
         instruction += "The person needs to be associated with the entity in some way. e.g. they work in the company or they are a character in the book."
-        instruction += f"Make sure the entity is in the format of {self.entity_format_prompt}"
+        instruction += (
+            f"Make sure the entity is in the format of {self.entity_format_prompt}"
+        )
 
         prompt = [
             {"role": "system", "content": self.system_prompt},
@@ -212,12 +214,16 @@ class SyntheticDataGenerator(GPT):
                     description_type=keyword.lower(),
                     description=getattr(entity, keyword),
                 )
-                datapoint.Q, datapoint.A, datapoint.key_string = construct_prompts(datapoint)
+                datapoint.Q, datapoint.A, datapoint.key_string = construct_prompts(
+                    datapoint
+                )
                 dataset.append(datapoint)
 
         return dataset
 
-    def augmenta_data_with_synthetic_QA(self, dataset: list[DataPoint]) -> list[DataPoint]:
+    def augmenta_data_with_synthetic_QA(
+        self, dataset: list[DataPoint]
+    ) -> list[DataPoint]:
         self.system_prompt = """You are given a question and answer pair, please extend the question to be open-ended and generate a short answer. 
                                 For example, you could generate "What is the objective of xxx and what do you think of it?"
                                 Make sure the answer is **only** based on information provided from the QA pair. In addition, please generate in the format of:
@@ -227,14 +233,17 @@ class SyntheticDataGenerator(GPT):
 
         for data in dataset:
             try:
-                prompt = "Generate an extended Q and an A for this pair: " + f"Q: {data.Q}\nA: {data.A}"
+                prompt = (
+                    "Generate an extended Q and an A for this pair: "
+                    + f"Q: {data.Q}\nA: {data.A}"
+                )
                 gpt_output = self.generate_response(prompt)
                 extended_q = re.findall(r"Q: (.*)", gpt_output)[0]
                 extended_a = re.findall(r"A: (.*)", gpt_output)[0]
                 data.extended_Q = extended_q
                 data.extended_A = extended_a
             except Exception as e:
-                print(f"Error augmenting Q&A.")
+                print("Error augmenting Q&A.")
                 print(e)
                 continue
         return dataset
@@ -248,7 +257,7 @@ class SyntheticDataGenerator(GPT):
                 data.Q = gpt_output
 
             except Exception as e:
-                print(f"Error perturbing the names in the queries.")
+                print("Error perturbing the names in the queries.")
                 print(e)
                 continue
         return dataset
@@ -260,10 +269,16 @@ def parser_args():
     parser.add_argument("--endpoint_url", type=str, required=True)
     parser.add_argument("--output_path", type=str, default="dataset")
     parser.add_argument("--generate_related_people", type=bool, default=True)
-    parser.add_argument("--raw_output_file", type=str, default="synthetic_data_raw.json")
+    parser.add_argument(
+        "--raw_output_file", type=str, default="synthetic_data_raw.json"
+    )
     parser.add_argument("--output_file", type=str, default="synthetic_data_QA.json")
-    parser.add_argument("--perturbed_output_file", type=str, default="perturbed_output_file")
-    parser.add_argument("--augmented_output_file", type=str, default="synthetic_data_QA_augmented.json")
+    parser.add_argument(
+        "--perturbed_output_file", type=str, default="perturbed_output_file"
+    )
+    parser.add_argument(
+        "--augmented_output_file", type=str, default="synthetic_data_QA_augmented.json"
+    )
 
     args = parser.parse_args()
     return args
@@ -291,7 +306,7 @@ if __name__ == "__main__":
                 try:
                     entity = data_generator.generate_entity(instruction)
                 except Exception as e:
-                    print(f"Error generating entity.")
+                    print("Error generating entity.")
                     print(e)
                     continue
                 save_entity(entity, raw_output_file)
@@ -301,7 +316,7 @@ if __name__ == "__main__":
                     try:
                         response = data_generator.generate_related_data(entity)
                     except Exception as e:
-                        print(f"Error generating entity.")
+                        print("Error generating entity.")
                         print(e)
                         continue
                     save_entity(response, raw_output_file)

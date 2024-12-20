@@ -14,7 +14,9 @@ class IdentityMap(nn.Module):
         return x
 
 
-def get_projector(projector_type: str, in_dim: int, out_dim: int, projector_kwargs: dict) -> nn.Module:
+def get_projector(
+    projector_type: str, in_dim: int, out_dim: int, projector_kwargs: dict
+) -> nn.Module:
     assert isinstance(projector_kwargs, dict)
     if projector_type == "identity":
         return IdentityMap()
@@ -33,6 +35,7 @@ def get_projector(projector_type: str, in_dim: int, out_dim: int, projector_kwar
         return nn.Sequential(*modules)
     else:
         raise NotImplementedError(f"Projector type {projector_type} not found")
+
 
 # TODO(t-isazawat): Add support for batching here
 class KBEncoder(nn.Module, FeatureExtractionMixin):
@@ -60,21 +63,25 @@ class KBEncoder(nn.Module, FeatureExtractionMixin):
         # Define the KB encoder backbone
         self.encoder_spec = encoder_name
 
-        if encoder_name in ['OAI', 'BigOAI']:
-            big = 'Big' in encoder_name
+        if encoder_name in ["OAI", "BigOAI"]:
+            big = "Big" in encoder_name
             if get_oai_embd_online:
                 if big:
                     self.gs = GPT("text-embedding-3-large", endpoint_url)
                 else:
                     self.gs = GPT("ada-embeddings", endpoint_url)
 
-                self.base_model_encode = lambda s: torch.tensor(self.gs.generate_embedding(s)).to(self.device)
+                self.base_model_encode = lambda s: torch.tensor(
+                    self.gs.generate_embedding(s)
+                ).to(self.device)
             else:
                 self.base_model_encode = None
             self.in_dim = 3072 if big else 1536
         else:
             self.base_model = SentenceTransformer(encoder_name)
-            self.base_model_encode = lambda s: self.base_model.encode(s, convert_to_numpy=False)
+            self.base_model_encode = lambda s: self.base_model.encode(
+                s, convert_to_numpy=False
+            )
             self.frozen_base_model = frozen_base_model
             if frozen_base_model:
                 self.base_model.eval()
@@ -84,9 +91,15 @@ class KBEncoder(nn.Module, FeatureExtractionMixin):
                 self.base_model.train()
             self.in_dim = self.base_model.get_sentence_embedding_dimension()
         self.out_dim = out_dim
-        self.projector_k = get_projector(projector_type, self.in_dim, self.out_dim, projector_kwargs)
-        self.projector_v = get_projector(projector_type, self.in_dim, self.out_dim, projector_kwargs)
-        self.key_layernorm = nn.LayerNorm(self.out_dim, elementwise_affine=False, bias=False)
+        self.projector_k = get_projector(
+            projector_type, self.in_dim, self.out_dim, projector_kwargs
+        )
+        self.projector_v = get_projector(
+            projector_type, self.in_dim, self.out_dim, projector_kwargs
+        )
+        self.key_layernorm = nn.LayerNorm(
+            self.out_dim, elementwise_affine=False, bias=False
+        )
         self.embedding = nn.Embedding(len(self.kb_special_token), out_dim)
         self.device = device
         self.to(self.device)
@@ -125,7 +138,9 @@ class KBEncoder(nn.Module, FeatureExtractionMixin):
         value_embd = self.encode_val(base_emb=value_embd)
         return key_embd, value_embd
 
-    def encode_base_embeddings(self, kb: tuple[torch.Tensor, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+    def encode_base_embeddings(
+        self, kb: tuple[torch.Tensor, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Encode the knowledge base into embeddings. Assumes that the input KB is given as a tuple of two torch tensors: keys and values
         """
@@ -152,5 +167,7 @@ class KBEncoder(nn.Module, FeatureExtractionMixin):
         Get the embedding for the special token,
         take in a string, returns a tensor
         """
-        idx = torch.tensor(self.kb_special_token[token_type]).to(self.embedding.weight.device)
+        idx = torch.tensor(self.kb_special_token[token_type]).to(
+            self.embedding.weight.device
+        )
         return self.embedding(idx).bfloat16()

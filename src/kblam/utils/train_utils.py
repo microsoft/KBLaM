@@ -80,8 +80,8 @@ def kb_to_embd(kb_encoder, kb_dict=None, precomputed_base_embd=None):
             value_embds.append(kb_encoder.encode_val(base_emb=value_base_embd))
     else:
         for entity in kb_dict:
-            key_embds.append(kb_encoder.encode_key(S=entity['key_string']))
-            value_embds.append(kb_encoder.encode_val(S=entity['description']))
+            key_embds.append(kb_encoder.encode_key(S=entity["key_string"]))
+            value_embds.append(kb_encoder.encode_val(S=entity["description"]))
     return (torch.stack(key_embds), torch.stack(value_embds))
 
 
@@ -105,7 +105,7 @@ def get_kb_embd(
                 _train_set_key, _train_set_val = kb_to_embd(
                     kb_encoder, kb_dict=[kb_dict[i] for i in indices_row]
                 )
-                train_set_key.append(_train_set_key),
+                (train_set_key.append(_train_set_key),)
                 train_set_val.append(_train_set_val)
             train_set_key = torch.stack(train_set_key, 1)
             train_set_val = torch.stack(train_set_val, 1)
@@ -151,10 +151,10 @@ def compute_perplexity_gain(model, kb, input_ids, attention_mask, labels):
 
 
 def context_set_size_scheduler(curr_step: int, kb_size: list[int] | int | str) -> int:
-    """Determines the KB size for the current training step. 
-        The KB size can be a fixed number, a list of numbers or a "dynamic" value.
-        If no KB size is provided, the KB size is dynamicly increased every 100 steps."""
-    
+    """Determines the KB size for the current training step.
+    The KB size can be a fixed number, a list of numbers or a "dynamic" value.
+    If no KB size is provided, the KB size is dynamicly increased every 100 steps."""
+
     dynamic_range = (10, 200)
     if kb_size == "dynamic":
         return np.random.randint(dynamic_range[0], dynamic_range[1])
@@ -196,8 +196,13 @@ def get_prefix_str(args: argparse.Namespace) -> str:
         prefix_string += "UseDataAug"
     return prefix_string
 
-def setup_scheduler_and_optimizer(model_parapmeters: ParamsT, lr: float, max_iter: int) -> tuple:
+
+def setup_scheduler_and_optimizer(
+    model_parapmeters: ParamsT, lr: float, max_iter: int
+) -> tuple:
     optim = torch.optim.AdamW(model_parapmeters, lr=lr, weight_decay=0.0)  # type: ignore
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max_iter, eta_min=lr * 0.01)  # type: ignore
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optim, max_iter, eta_min=lr * 0.01
+    )  # type: ignore
     return scheduler, optim
