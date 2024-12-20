@@ -51,7 +51,7 @@ experiment = [
     "wandb",
 ]
 
-all = ["kblam[dev,experiment,finetune]"]
+all = ["kblam[dev,experiment]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
