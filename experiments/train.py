@@ -24,6 +24,7 @@ from rich.progress import (
 from rich.theme import Theme
 from torch.nn import CrossEntropyLoss
 from transformers import AutoTokenizer
+from accelerate import Accelerator
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -106,6 +107,7 @@ def create_custom_progress_bar(
     show_time: bool = True,
     show_spinner: bool = True,
     spinner_style: str = "dots",
+    disable=False,
 ) -> Progress:
     """
     Create a custom progress bar using Rich, optionally including loss reporting.
@@ -139,7 +141,7 @@ def create_custom_progress_bar(
     if show_time:
         columns.append(TimeRemainingColumn())
 
-    progress = Progress(*columns, console=console, expand=True, disable=False)
+    progress = Progress(*columns, console=console, expand=True, disable=disable)
     return progress
 
 
@@ -162,12 +164,7 @@ def _create_labels_for_llama(input_ids: torch.Tensor, input_strs: List[str], tok
     # Not sure this is correct. This method simply masks the <|start_header_id|>user<|end_header_id|> then leaves the rest in the labels
     # Possibly what they want is to mask out the query. To do that swap the index from the tokenizer below from 1 to 2
     answer_indices = torch.argmax(
-        (
-            input_ids
-            == tokenizer("<|start_header_id|>assistant<|end_header_id|>")["input_ids"][
-                1
-            ]
-        ).long(),
+        (input_ids == tokenizer("<|start_header_id|>assistant<|end_header_id|>")["input_ids"][1]).long(),
         -1,
     )
     answer_mask = torch.ones_like(input_ids)
@@ -219,9 +216,7 @@ def get_batch(
 
     if random_sample:
         if multi_entities is not None:
-            batch_indices = np.random.choice(
-                len(dataset), (B, multi_entities), replace=False
-            )
+            batch_indices = np.random.choice(len(dataset), (B, multi_entities), replace=False)
         else:
             batch_indices = np.random.choice(len(dataset), B, replace=False)
     else:
@@ -247,9 +242,7 @@ def get_batch(
         for idx in batch_indices:
             Q, A = get_question_and_answer(idx)
             input_strs.append(qa_format_func(Q, A))
-        tokenizer_output = tokenizer(input_strs, return_tensors="pt", padding=True).to(
-            device
-        )
+        tokenizer_output = tokenizer(input_strs, return_tensors="pt", padding=True).to(device)
         input_ids, attention_masks = (
             tokenizer_output["input_ids"],
             tokenizer_output["attention_mask"],
@@ -302,9 +295,7 @@ def get_prefix_str(args):
     return prefix_string
 
 
-def _load_cached_embeddigns(
-    encoder_model_spec: str, dataset_dir: str, dataset_name: str, key_embd_src: str
-):
+def _load_cached_embeddings(encoder_model_spec: str, dataset_dir: str, dataset_name: str, key_embd_src: str):
     if encoder_model_spec == "OAI":
         encoder_model_spec_str = "oai"
     else:
@@ -461,9 +452,7 @@ class KBRetriever:
                 precomputed_embd=(self.key_embds, self.value_embds),
             )
         else:
-            train_set_key, train_set_val = get_kb_embd(
-                self.encoder, batch_indices, kb_dict=self.dataset
-            )
+            train_set_key, train_set_val = get_kb_embd(self.encoder, batch_indices, kb_dict=self.dataset)
 
         if len(train_set_key.shape) == 2:
             # Add comment on why we need this line
@@ -471,9 +460,7 @@ class KBRetriever:
             train_set_val = train_set_val.unsqueeze(0).transpose(0, 1)
 
         context_set_size = context_set_size_scheduler(step, kb_size)
-        context_set_index = np.random.choice(
-            len(self.dataset), context_set_size, replace=False
-        )  # type: ignore
+        context_set_index = np.random.choice(len(self.dataset), context_set_size, replace=False)  # type: ignore
         if self._use_cached_embd():
             context_set_key, context_set_val = get_kb_embd(
                 self.encoder,
@@ -481,15 +468,9 @@ class KBRetriever:
                 precomputed_embd=(self.key_embds, self.value_embds),
             )
         else:
-            context_set_key, context_set_val = get_kb_embd(
-                self.encoder, context_set_index, kb_dict=self.dataset
-            )
-        context_set_key = context_set_key.unsqueeze(0).expand(
-            batch_size, *context_set_key.shape
-        )
-        context_set_val = context_set_val.unsqueeze(0).expand(
-            batch_size, *context_set_val.shape
-        )
+            context_set_key, context_set_val = get_kb_embd(self.encoder, context_set_index, kb_dict=self.dataset)
+        context_set_key = context_set_key.unsqueeze(0).expand(batch_size, *context_set_key.shape)
+        context_set_val = context_set_val.unsqueeze(0).expand(batch_size, *context_set_val.shape)
         # context_set_val = torch.randn_like(context_set_val)
         # Idea: Try torch.randn here context_set_tokens??
         true_kb_copy = 1
@@ -509,13 +490,14 @@ class Trainer:
         kb_token_layer_frequency: int,
         num_steps: int,
         lr: float,
-        device: torch.device,
+        device: torch.device | None,
         use_lr_decay: bool,
         kb_size: int | List[int],
         llm_savename: str,
         output_dir: str,
         sep_query_head: bool = False,
     ):
+        self.accelerator = Accelerator()
         self.logger = logging.getLogger("training")
         self.tokenizer = tokenizer
         self.sep_query_head = sep_query_head
@@ -523,7 +505,7 @@ class Trainer:
         self.num_steps = num_steps
         self.lr = lr
         self.model = llm_model
-        self.device = device
+        self.device = device if device is not None else self.accelerator.device
         self.kbretriever = kbretriever
         self.kb_size = kb_size
         self.use_lr_decay = use_lr_decay
@@ -531,26 +513,24 @@ class Trainer:
         self.output_path = pathlib.Path(output_dir)
 
         if isinstance(llm_model, KBLaMPhi3ForCausalLM):  # Phi3
-            self._get_batch = partial(
-                get_batch, _format_QA_phi3, _create_labels_for_phi3
-            )
+            self._get_batch = partial(get_batch, _format_QA_phi3, _create_labels_for_phi3)
             self._get_params = _get_phi3_query_head_parameters
         elif isinstance(llm_model, KblamLlamaForCausalLM):  # llama
-            self._get_batch = partial(
-                get_batch, _format_QA_llama, _create_labels_for_llama
-            )
+            self._get_batch = partial(get_batch, _format_QA_llama, _create_labels_for_llama)
             self._get_params = _get_llama3_query_head_parameters
         else:
             raise ValueError(f"{llm_model} not recognised")
 
         self.scheduler, self.optim = self.setup_scheduler_and_optim()
 
+        self.model, self.optim, self._get_batch, self.kbretriever.encoder = self.accelerator.prepare(
+            self.model, self.optim, self._get_batch, self.kbretriever.encoder
+        )
+
     def setup_scheduler_and_optim(self):
         if self.sep_query_head:
             self.logger.info("Query head being fine tuned!")
-            llm_q_params = self._get_params(
-                self.model, self.sep_query_head, self.kb_token_layer_frequency
-            )
+            llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
             scheduler, optim = setup_scheduler_and_optimizer(
                 chain(self.kbretriever.encoder.parameters(), llm_q_params),
                 self.lr,
@@ -582,7 +562,7 @@ class Trainer:
 
         loss_fct = CrossEntropyLoss(reduction="none")
 
-        with create_custom_progress_bar(console=console) as pbar:
+        with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
             task = pbar.add_task("Training", total=self.num_steps, loss=100)
             for step in range(start_step, self.num_steps, 1):
                 self.optim.zero_grad()
@@ -606,9 +586,7 @@ class Trainer:
                         random_sample=True,
                         **step_config,
                     )
-                    kb_embedding = self.kbretriever.get_key_embeddings(
-                        batch_indices, batch_size, step, self.kb_size
-                    )
+                    kb_embedding = self.kbretriever.get_key_embeddings(batch_indices, batch_size, step, self.kb_size)
                     out = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_masks,
@@ -622,25 +600,16 @@ class Trainer:
                     if a_step == 0 and step % 10 == 0:
                         batch_index = 0  # Which example in the batch to select
                         max_logits = logits.argmax(axis=2)
-                        decoded_pred = self.tokenizer.decode(
-                            max_logits[batch_index, :-1]
-                        )
+                        decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
                         sel_labels = labels[batch_index, :]
-                        sel_labels = sel_labels[
-                            sel_labels >= 0
-                        ]  # Remove padding token -100
+                        sel_labels = sel_labels[sel_labels >= 0]  # Remove padding token -100
                         decoded_gt = self.tokenizer.decode(sel_labels)
                         self.logger.info(f"{decoded_gt}")
                         self.logger.info(f"{decoded_pred}")
 
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
-                    weights = (
-                        (shift_labels > 0)
-                        .sum(-1, keepdim=True)
-                        .expand(-1, shift_labels.shape[1])
-                        .contiguous()
-                    )
+                    weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
                     # Flatten the tokens
                     shift_logits = shift_logits.view(-1, self.model.config.vocab_size)
                     shift_labels = shift_labels.view(-1)
@@ -652,7 +621,7 @@ class Trainer:
                         loss_fct(shift_logits, shift_labels) * weights.max() / weights
                     ).mean()  # Make sure each sample is equally weighted
 
-                    loss.backward()
+                    self.accelerator.backward(loss)
                     losses.append(loss.item())
 
                 self.optim.step()
@@ -666,15 +635,22 @@ class Trainer:
 
                 if (step % save_period) == 0 and (step != start_step):
                     # Save the full model with query head, and the encoder (adapter) and the kb_config
-                    model_ckpt_name = (
-                        self.output_path / f"{self.llm_savename}_step_{step}"
+                    model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
+                    self.accelerator.wait_for_everyone()
+                    unwrapped_model = self.accelerator.unwrap_model(self.model)
+                    unwrapped_model.save_pretrained(
+                        model_ckpt_name,
+                        is_main_process=self.accelerator.is_main_process,
+                        save_function=self.accelerator.save,
                     )
-                    self.model.save_pretrained(model_ckpt_name)
 
                     encoder_ckpt_name = model_ckpt_name / "encoder.pt"
-                    torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
+                    self.accelerator.save_model(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
 
-                    kb_config.save_pretrained(model_ckpt_name / "kb_config.json")
+                    kb_config.save_pretrained(
+                        model_ckpt_name / "kb_config.json",
+                        is_main_process=self.accelerator.is_main_process,
+                    )
 
 
 def main():
@@ -752,17 +728,13 @@ def main():
         # We load the pre-computed version stored on the disk rather
         # than computing them on the fly to make things faster
         logger.info(f"Using pre-computed {encoder_spec} embedding")
-        key_embds, value_embds = _load_cached_embeddigns(
-            encoder_spec, dataset_dir, dataset_name, key_embd_src
-        )
+        key_embds, value_embds = _load_cached_embeddings(encoder_spec, dataset_dir, dataset_name, key_embd_src)
 
     prefix_string = get_prefix_str(args)
     logger.info(f"Experiment prefix {get_prefix_str(args)}")
 
     if use_extended_qa:
-        dataset = json.load(
-            open(os.path.join(dataset_dir, f"{dataset_name}_augmented.json"))
-        )
+        dataset = json.load(open(os.path.join(dataset_dir, f"{dataset_name}_augmented.json")))
     else:
         dataset = json.load(open(os.path.join(dataset_dir, f"{dataset_name}.json")))
 
@@ -771,17 +743,13 @@ def main():
     # Set up the LLM
     llm_model_spec = model_dir_to_resume if model_dir_to_resume else hf_model_spec
 
-    resumed_step = (
-        0 if not model_dir_to_resume else int(model_dir_to_resume.split("_")[-1])
-    )
+    resumed_step = 0 if not model_dir_to_resume else int(model_dir_to_resume.split("_")[-1])
 
     if llm_model_spec is None:
         raise ValueError("Either supply model_dir_to_resume or hf_model_spec")
 
     if hf_token is None and args.llm_type == "llama3":
-        raise ValueError(
-            "Please supply HuggingFace token(hf_token) when loading model Llama weights from HuggingFace"
-        )
+        raise ValueError("Please supply HuggingFace token(hf_token) when loading model Llama weights from HuggingFace")
 
     # Tokenizer comes from the base model
     tokenizer = AutoTokenizer.from_pretrained(
@@ -828,12 +796,8 @@ def main():
     )
 
     if model_dir_to_resume:
-        encoder.load_state_dict(
-            torch.load(os.path.join(model_dir_to_resume, "encoder.pt"))
-        )
-        kb_config = KBLaMConfig.from_pretrained(
-            os.path.join(model_dir_to_resume, "kb_config.json")
-        )
+        encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))
+        kb_config = KBLaMConfig.from_pretrained(os.path.join(model_dir_to_resume, "kb_config.json"))
     else:
         kb_config = KBLaMConfig(
             sep_query_head=sep_query_head,
@@ -852,9 +816,7 @@ def main():
     logger.info("Model ready 🚀")
 
     # Get the training started
-    llm_ckpt_name = (
-        f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
-    )
+    llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
 
     trainer = Trainer(
         model,  # type: ignore
