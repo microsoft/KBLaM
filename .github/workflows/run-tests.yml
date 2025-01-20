@@ -44,4 +44,4 @@ jobs:
 
       - name: coverage
         run: |
-          pdm run coverage xml -o .tmp/reports/coverage.xml
+          pdm run coverage xml -o .tmp/reports/coverage.xml --source=src
