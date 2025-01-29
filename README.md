@@ -1,4 +1,4 @@
-# KBLaM - Knowledge Base Augmented Language Models
+# KBLaM - Knowledge Base Augmented Language Models [ICLR 2025]
 
 This repo contains the official implementation of [KBLaM: Knowledge Base Augmented Language Models](https://arxiv.org/abs/2410.10450).
 
