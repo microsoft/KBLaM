@@ -4,6 +4,7 @@ from torch.nn import CrossEntropyLoss
 import argparse
 
 from torch.optim.optimizer import ParamsT
+from torch.nn.parallel import DistributedDataParallel
 
 
 def get_tensor_config(x: torch.tensor) -> dict[str, any]:
@@ -38,11 +39,8 @@ def preprocess_embds(emb1: list, emb2: list, kb_mask_val: int = 1):
         attention_mask = torch.cat(
             [
                 torch.zeros(pad_size, **tensor_config),
-                torch.zeros(e1.shape[0], **tensor_config)
-                + kb_mask_val,  # Attention mask for KB
-                torch.ones(
-                    e2.shape[0], **tensor_config
-                ),  # Attention mask for the question
+                torch.zeros(e1.shape[0], **tensor_config) + kb_mask_val,  # Attention mask for KB
+                torch.ones(e2.shape[0], **tensor_config),  # Attention mask for the question
             ]
         )
 
@@ -73,6 +71,8 @@ def preprocess_embds(emb1: list, emb2: list, kb_mask_val: int = 1):
 
 
 def kb_to_embd(kb_encoder, kb_dict=None, precomputed_base_embd=None):
+    if isinstance(kb_encoder, DistributedDataParallel):
+        kb_encoder = kb_encoder.module
     key_embds, value_embds = [], []
     if precomputed_base_embd is not None:
         for key_base_embd, value_base_embd in zip(*precomputed_base_embd):
@@ -102,17 +102,13 @@ def get_kb_embd(
             # Sampling batch of multi entities
             train_set_key, train_set_val = [], []
             for indices_row in indices.T:
-                _train_set_key, _train_set_val = kb_to_embd(
-                    kb_encoder, kb_dict=[kb_dict[i] for i in indices_row]
-                )
+                _train_set_key, _train_set_val = kb_to_embd(kb_encoder, kb_dict=[kb_dict[i] for i in indices_row])
                 (train_set_key.append(_train_set_key),)
                 train_set_val.append(_train_set_val)
             train_set_key = torch.stack(train_set_key, 1)
             train_set_val = torch.stack(train_set_val, 1)
         elif len(indices.shape) == 1:
-            train_set_key, train_set_val = kb_to_embd(
-                kb_encoder, kb_dict=[kb_dict[i] for i in indices]
-            )
+            train_set_key, train_set_val = kb_to_embd(kb_encoder, kb_dict=[kb_dict[i] for i in indices])
     return train_set_key, train_set_val
 
 
@@ -126,12 +122,7 @@ def weighted_nll(model, input_ids, attention_mask, labels, kb=None):
     logits = out["logits"]
     shift_logits = logits[..., :-1, :].contiguous()
     shift_labels = labels[..., 1:].contiguous()
-    weights = (
-        (shift_labels > 0)
-        .sum(-1, keepdim=True)
-        .expand(-1, shift_labels.shape[1])
-        .contiguous()
-    )
+    weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
     shift_logits = shift_logits.view(-1, model.config.vocab_size)
     shift_labels = shift_labels.view(-1)
     weights = weights.view(-1)
@@ -143,9 +134,7 @@ def weighted_nll(model, input_ids, attention_mask, labels, kb=None):
 
 def compute_perplexity_gain(model, kb, input_ids, attention_mask, labels):
     with torch.autograd.no_grad():
-        unconditioned_nll = weighted_nll(
-            model, input_ids, attention_mask, labels, kb=None
-        )
+        unconditioned_nll = weighted_nll(model, input_ids, attention_mask, labels, kb=None)
         conditioned_nll = weighted_nll(model, input_ids, attention_mask, labels, kb)
     return unconditioned_nll, conditioned_nll  # Loss should decrease
 
@@ -197,12 +186,8 @@ def get_prefix_str(args: argparse.Namespace) -> str:
     return prefix_string
 
 
-def setup_scheduler_and_optimizer(
-    model_parapmeters: ParamsT, lr: float, max_iter: int
-) -> tuple:
+def setup_scheduler_and_optimizer(model_parapmeters: ParamsT, lr: float, max_iter: int) -> tuple:
     optim = torch.optim.AdamW(model_parapmeters, lr=lr, weight_decay=0.0)  # type: ignore
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optim, max_iter, eta_min=lr * 0.01
-    )  # type: ignore
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, max_iter, eta_min=lr * 0.01)  # type: ignore
     return scheduler, optim

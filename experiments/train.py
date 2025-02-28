@@ -10,6 +10,7 @@ from typing import Callable, Dict, List, Optional
 
 import numpy as np
 import torch
+from torch.nn.parallel import DistributedDataParallel
 import transformers
 from rich.console import Console
 from rich.logging import RichHandler
@@ -69,7 +70,7 @@ logging.basicConfig(
 # fmt: off
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--train_dataset",type=str,default="synthetic_data",choices=["enron", "synthetic_data"])
+parser.add_argument("--train_dataset",type=str,default="gpt_data")
 parser.add_argument("--N", type=int, default=120000, help="Size of training set, select the first N samples for training")
 parser.add_argument("--B", type=int, default=10, help="Batch size")
 parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -266,7 +267,7 @@ def get_prefix_str(args):
 
     duplicate_true_kb = args.duplicate_true_kb
     length_invariance = args.length_invariance
-    outlier_ratio = args.outlier_ratio
+    outlier_ratio = args.outlier_num
     use_outlier = outlier_ratio != -1
     multi_entities = args.multi_entities
     use_extended_qa = args.use_extended_qa
@@ -562,14 +563,29 @@ class Trainer:
 
         loss_fct = CrossEntropyLoss(reduction="none")
 
+        # Calculate accumulation steps per GPU
+        num_processes = self.accelerator.num_processes
+        accum_steps_per_gpu = max(1, grad_accum_steps // num_processes)
+        effective_batch_size = batch_size * grad_accum_steps
+
+        if self.accelerator.is_main_process:
+            self.logger.info(f"Training with {num_processes} GPUs")
+            self.logger.info(f"Total accumulation steps: {grad_accum_steps}, Steps per GPU: {accum_steps_per_gpu}")
+            self.logger.info(f"Effective batch size: {effective_batch_size}")
+
         with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
             task = pbar.add_task("Training", total=self.num_steps, loss=100)
             for step in range(start_step, self.num_steps, 1):
                 self.optim.zero_grad()
                 losses = []
 
+                # Calculate which accumulation steps this GPU should process
+                process_rank = self.accelerator.process_index
+                start_accum_step = process_rank * accum_steps_per_gpu
+                end_accum_step = min(start_accum_step + accum_steps_per_gpu, grad_accum_steps)
+
                 # Accumulate gradients
-                for a_step in range(grad_accum_steps):
+                for a_step in range(start_accum_step, end_accum_step):
                     step_config = get_step_config(
                         a_step,
                         grad_accum_steps,
@@ -604,14 +620,20 @@ class Trainer:
                         sel_labels = labels[batch_index, :]
                         sel_labels = sel_labels[sel_labels >= 0]  # Remove padding token -100
                         decoded_gt = self.tokenizer.decode(sel_labels)
-                        self.logger.info(f"{decoded_gt}")
-                        self.logger.info(f"{decoded_pred}")
+                        self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
+                        self.logger.info(f"GT: {decoded_gt}")
+                        self.logger.info(f"PRED: {decoded_pred}")
 
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
                     # Flatten the tokens
-                    shift_logits = shift_logits.view(-1, self.model.config.vocab_size)
+                    model_config = (
+                        self.model.config
+                        if not isinstance(self.model, DistributedDataParallel)
+                        else self.model.module.config
+                    )
+                    shift_logits = shift_logits.view(-1, model_config.vocab_size)
                     shift_labels = shift_labels.view(-1)
                     weights = weights.view(-1)
 
@@ -628,32 +650,76 @@ class Trainer:
                 if self.use_lr_decay:
                     self.scheduler.step()
 
-                self.logger.info(f"step: {step}, loss: {np.mean(losses)}")
+                # Gather and average losses from all GPUs for reporting
+                if losses:  # Only if this GPU processed any batches
+                    local_loss = torch.tensor(np.mean(losses), device=self.device)
+                else:
+                    local_loss = torch.tensor(0.0, device=self.device)
 
-                train_losses.append(np.mean(losses))
-                pbar.update(task, advance=1, loss=np.mean(losses))
+                # Gather losses from all processes
+                all_losses = self.accelerator.gather(local_loss)
+                valid_losses = all_losses[all_losses > 0]  # Filter out zeros from GPUs that didn't process batches
+                avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
+
+                # Only log from main process
+                if self.accelerator.is_main_process:
+                    self.logger.info(f"step: {step}, loss: {avg_loss}")
+                    train_losses.append(avg_loss)
+                    pbar.update(task, advance=1, loss=avg_loss)
 
                 if (step % save_period) == 0 and (step != start_step):
-                    # Save the full model with query head, and the encoder (adapter) and the kb_config
-                    model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
-                    self.accelerator.wait_for_everyone()
-                    unwrapped_model = self.accelerator.unwrap_model(self.model)
-                    unwrapped_model.save_pretrained(
-                        model_ckpt_name,
-                        is_main_process=self.accelerator.is_main_process,
-                        save_function=self.accelerator.save,
-                    )
+                    try:
+                        # Log memory usage before synchronization
+                        self.logger.info(
+                            f"Is main process: {self.accelerator.is_main_process}, GPU memory before save: {torch.cuda.memory_allocated()/1e9:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1e9:.2f}GB"
+                        )
 
-                    encoder_ckpt_name = model_ckpt_name / "encoder.pt"
-                    self.accelerator.save_model(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
+                        # Try to free up memory
+                        torch.cuda.empty_cache()
 
-                    kb_config.save_pretrained(
-                        model_ckpt_name / "kb_config.json",
-                        is_main_process=self.accelerator.is_main_process,
-                    )
+                        # Synchronize before saving
+                        self.accelerator.wait_for_everyone()
+
+                        if self.accelerator.is_main_process:
+
+                            self.logger.info("Saving checkpoint...")
+                            self.logger.info("Making dirs...")
+                            # Save model - using proper directory creation
+                            model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
+                            model_ckpt_name.mkdir(parents=True, exist_ok=True)
+
+                            # Also create encoder directory
+                            encoder_dir = self.output_path / f"{self.llm_savename}_step_{step}_encoder"
+                            encoder_dir.mkdir(parents=True, exist_ok=True)
+
+                            self.logger.info("Saving model...")
+                            # Unwrap and save model
+                            unwrapped_model = self.accelerator.unwrap_model(self.model)
+                            unwrapped_model.save_pretrained(
+                                model_ckpt_name,
+                                is_main_process=self.accelerator.is_main_process,
+                                save_function=self.accelerator.save,
+                            )
+
+                            self.logger.info("Saving encoder...")
+                            # Save encoder and config from main process
+                            encoder_ckpt_name = encoder_dir / "encoder.pt"
+                            torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
+
+                            self.logger.info("Saving config...")
+                            # Explicitly save config as JSON
+                            config_path = model_ckpt_name / "kb_config_explicit.json"
+                            with open(config_path, 'w') as f:
+                                f.write(kb_config.to_json_string())
+
+                    except Exception as e:
+                        self.logger.error(f"Error saving checkpoint: {e}")
+                        self.logger.error(f"Error details: {str(e)}")
+                        raise e
 
 
 def main():
+    os.environ["NCCL_TIMEOUT"] = "1200000"
     logger = logging.getLogger("training")
 
     args = parser.parse_args()
@@ -665,6 +731,7 @@ def main():
     else:
         logger.setLevel(logging.INFO)
 
+    print(vars(args))
     dataset_name = args.train_dataset
     seed = args.seed
     N = args.N
@@ -843,7 +910,7 @@ def main():
         use_data_aug=use_data_aug,
         multi_entities=multi_entities,
         use_extended_qa=use_extended_qa,
-        save_period=500,
+        save_period=3000,
         resumed_step=resumed_step,
         kb_config=kb_config,
     )
