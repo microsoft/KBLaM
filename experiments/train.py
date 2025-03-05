@@ -8,6 +8,7 @@ from functools import partial
 from itertools import chain
 from typing import Callable, Dict, List, Optional
 
+import wandb
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel
@@ -92,13 +93,14 @@ parser.add_argument("--dynamic_kb_size", nargs=2, type=int, default=None, help="
 parser.add_argument("--duplicate_true_kb", action=argparse.BooleanOptionalAction, default=True, help="Duplicate true entity's KB token")
 parser.add_argument("--length_invariance", action=argparse.BooleanOptionalAction, default=False, help="Scale the raw attention score")
 parser.add_argument("--outlier_num", type=int, default=1, help="Introduce questions without correct KB entites")
-parser.add_argument("--multi_entities", type=int, default=2, help="Introduce questions involving multiple entities")
+parser.add_argument("--multi_entities", type=int, default=None, help="Introduce questions involving multiple entities")
 parser.add_argument("--use_extended_qa", action="store_true", help="Introduce QA with extended open-ended parts")
 parser.add_argument("--kb_token_layer_frequency", type=int, default=3, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
 parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
 parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3"])
+parser.add_argument("--max_seq_len",type=int,default=None)
 # fmt: on
 
 
@@ -240,9 +242,15 @@ def get_batch(
 
     with torch.autograd.no_grad():
         input_strs = []
+        real_batch_indices = []
         for idx in batch_indices:
             Q, A = get_question_and_answer(idx)
-            input_strs.append(qa_format_func(Q, A))
+            if Q is not None and A is not None:
+                input_strs.append(qa_format_func(Q, A))
+                real_batch_indices.append(idx)
+            else:
+                print("Q or Answer is none")
+        batch_indices = real_batch_indices
         tokenizer_output = tokenizer(input_strs, return_tensors="pt", padding=True).to(device)
         input_ids, attention_masks = (
             tokenizer_output["input_ids"],
@@ -497,6 +505,7 @@ class Trainer:
         llm_savename: str,
         output_dir: str,
         sep_query_head: bool = False,
+        max_seq_len: int | None = None,
     ):
         self.accelerator = Accelerator()
         self.logger = logging.getLogger("training")
@@ -505,7 +514,11 @@ class Trainer:
         self.kb_token_layer_frequency = kb_token_layer_frequency
         self.num_steps = num_steps
         self.lr = lr
+        self.max_seq_len = max_seq_len
+
         self.model = llm_model
+        self.model.gradient_checkpointing_enable()
+
         self.device = device if device is not None else self.accelerator.device
         self.kbretriever = kbretriever
         self.kb_size = kb_size
@@ -571,6 +584,7 @@ class Trainer:
         if self.accelerator.is_main_process:
             self.logger.info(f"Training with {num_processes} GPUs")
             self.logger.info(f"Total accumulation steps: {grad_accum_steps}, Steps per GPU: {accum_steps_per_gpu}")
+            self.logger.info(f"Batch size: {batch_size}")
             self.logger.info(f"Effective batch size: {effective_batch_size}")
 
         with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
@@ -602,7 +616,20 @@ class Trainer:
                         random_sample=True,
                         **step_config,
                     )
-                    kb_embedding = self.kbretriever.get_key_embeddings(batch_indices, batch_size, step, self.kb_size)
+
+                    if a_step == 0 and step % 10 == 0:
+                        self.logger.info(f"INPUT IDs SHAPE: {input_ids.shape}")
+
+                    if self.max_seq_len is not None:
+                        input_ids = input_ids[:, : self.max_seq_len]
+                        attention_masks = attention_masks[:, : self.max_seq_len]
+                        labels = labels[:, : self.max_seq_len]
+                        if a_step == 0 and step % 10 == 0:
+                            self.logger.info(f"TRUNCATED INPUT IDs SHAPE: {input_ids.shape}")
+
+                    kb_embedding = self.kbretriever.get_key_embeddings(
+                        batch_indices, len(input_ids), step, self.kb_size
+                    )
                     out = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_masks,
@@ -623,6 +650,7 @@ class Trainer:
                         self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
                         self.logger.info(f"GT: {decoded_gt}")
                         self.logger.info(f"PRED: {decoded_pred}")
+                        wandb.log({"kbsize": kb_embedding[0].shape[1]})
 
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
@@ -664,6 +692,7 @@ class Trainer:
                 # Only log from main process
                 if self.accelerator.is_main_process:
                     self.logger.info(f"step: {step}, loss: {avg_loss}")
+                    wandb.log({'train_loss': np.mean(losses)})
                     train_losses.append(avg_loss)
                     pbar.update(task, advance=1, loss=avg_loss)
 
@@ -749,6 +778,7 @@ def main():
     sep_query_head = args.sep_query_head
     kb_size = args.kb_size
     dynamic_kb_size = args.dynamic_kb_size
+    max_seq_len = args.max_seq_len
 
     if kb_size is not None and dynamic_kb_size is not None:
         raise ValueError("Can't specify kb_size and dynamic_kb_size. Use only one")
@@ -770,6 +800,30 @@ def main():
     np.random.seed(seed)
 
     pathlib.Path(model_save_dir).mkdir(parents=True, exist_ok=True)
+
+    if Accelerator().is_main_process:
+        wandb.init(
+            # set the wandb project where this run will be logged
+            project="kb-llm",
+            # track hyperparameters and run metadata
+            config={
+                "learning_rate": args.lr,
+                'sep_query_head': sep_query_head,
+                'kb_size': kb_size,
+                'length_invariance': length_invariance,
+                'dataset': dataset_name,
+                'outlier_num': outlier_num,
+                'multi_entities': multi_entities,
+                'use_extended_qa': use_extended_qa,
+                'kb_token_layer_frequency': kb_token_layer_frequency,
+                'gradient_accm_step': gradient_accm_step,
+                "encoder_spec": encoder_spec,
+                "max_seq_len": max_seq_len,
+            },
+        )
+
+    # Try to free up memory
+    torch.cuda.empty_cache()
 
     if args.log_to_file:
         formatter = logging.Formatter(LOGFORMAT)
@@ -898,6 +952,7 @@ def main():
         llm_ckpt_name,
         model_save_dir,
         sep_query_head=sep_query_head,
+        max_seq_len=max_seq_len,
     )
 
     logger.info(f"Number of trainable parameters: {_get_parameter_count(encoder):,}")
