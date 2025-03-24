@@ -9,7 +9,7 @@ Unlike Retrieval-Augmented Generation, KBLAM eliminates external
 retrieval modules, and unlike in-context learning, its computational overhead scales linearly with KB size rather than quadratically.
 
 ## Supported Models
-The following models from HuggingFace hub are currently supported:
+The following models from Hugging Face hub are currently supported:
  - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
  - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
  - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
@@ -24,7 +24,7 @@ Install the kblam package with
 pip install -e .
 ```
 
-To use Llama models, you will need to generate a token from HuggingFace and use it to log in:
+To use Llama models, you will need to generate a token from Hugging Face and use it to log in:
 
 ```
 pip install huggingface_hub
