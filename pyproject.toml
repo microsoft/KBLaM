@@ -16,7 +16,7 @@ license = {text = "MIT"}
 dependencies = [
     "accelerate",
     "datasets==3.2.0",
-    "transformers==4.48.0",
+    "transformers==4.46.0",
     "torch",
     "sentence_transformers",
     "azure-ai-ml",
