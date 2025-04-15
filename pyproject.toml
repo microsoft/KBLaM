@@ -2,8 +2,8 @@
 # Licensed under the MIT license.
 
 [build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "kblam"
@@ -16,7 +16,7 @@ license = {text = "MIT"}
 dependencies = [
     "accelerate",
     "datasets==3.2.0",
-    "transformers==4.48.0",
+    "transformers==4.38.0",
     "torch",
     "sentence_transformers",
     "azure-ai-ml",
