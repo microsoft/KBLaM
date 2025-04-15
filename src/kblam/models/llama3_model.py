@@ -638,11 +638,11 @@ class LlamaPreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         std = self.config.initializer_range
         if isinstance(module, nn.Linear):
-            module.weight.data.normal(mean=0.0, std=std)
+            module.weight.data.normal_(mean=0.0, std=std)
             if module.bias is not None:
                 module.bias.data.zero()
         elif isinstance(module, nn.Embedding):
-            module.weight.data.normal(mean=0.0, std=std)
+            module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.paddingidx].zero()
 
