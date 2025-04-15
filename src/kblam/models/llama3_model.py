@@ -636,7 +636,7 @@ class LlamaPreTrainedModel(PreTrainedModel):
     _skip_keys_device_placement = "past_key_values"
 
     def _init_weights(self, module):
-        std = self.config.initializerrange
+        std = self.config.initializer_range
         if isinstance(module, nn.Linear):
             module.weight.data.normal(mean=0.0, std=std)
             if module.bias is not None:
