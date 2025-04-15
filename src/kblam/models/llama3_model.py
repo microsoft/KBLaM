@@ -52,7 +52,7 @@ from transformers.models.llama.modeling_llama import (
     repeat_kv,
 )
 
-
+from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
