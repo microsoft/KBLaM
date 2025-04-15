@@ -66,6 +66,57 @@ logger = logging.get_logger(__name__)
 
 PADDING_VALUE = torch.finfo(torch.bfloat16).min
 
+class LlamaRMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        LlamaRMSNorm is equivalent to T5LayerNorm
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+class LlamaRotaryEmbedding(torch.nn.Module):
+    def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
+        super().__init__()
+
+        self.dim = dim
+        self.max_position_embeddings = max_position_embeddings
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float().to(device) / self.dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+        # Build here to make `torch.jit.trace` work.
+        self._set_cos_sin_cache(
+            seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
+        )
+
+    def _set_cos_sin_cache(self, seq_len, device, dtype):
+        self.max_seq_len_cached = seq_len
+        t = torch.arange(self.max_seq_len_cached, device=device, dtype=self.inv_freq.dtype)
+
+        freqs = torch.einsum("i,j->ij", t, self.inv_freq)
+        # Different from paper, but it uses a different permutation in order to obtain the same calculation
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos()[None, None, :, :].to(dtype), persistent=False)
+        self.register_buffer("sin_cached", emb.sin()[None, None, :, :].to(dtype), persistent=False)
+
+    def forward(self, x, seq_len=None):
+        # x: [bs, num_attention_heads, seq_len, head_size]
+        if seq_len > self.max_seq_len_cached:
+            self._set_cos_sin_cache(seq_len=seq_len, device=x.device, dtype=x.dtype)
+
+        return (
+            self.cos_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
+            self.sin_cached[:, :, :seq_len, ...].to(dtype=x.dtype),
+        )
+
 class LlamaLinearScalingRotaryEmbedding(LlamaRotaryEmbedding):
     """LlamaRotaryEmbedding extended with linear scaling. Credits to the Reddit user /u/kaiokendev"""
 
@@ -108,6 +159,39 @@ class LlamaDynamicNTKScalingRotaryEmbedding(LlamaRotaryEmbedding):
         emb = torch.cat((freqs, freqs), dim=-1)
         self.register_buffer("cos_cached", emb.cos()[None, None, :, :].to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin()[None, None, :, :].to(dtype), persistent=False)
+
+class LlamaMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = ACT2FN[config.hidden_act]
+
+    def forward(self, x):
+        if self.config.pretraining_tp > 1:
+            slice = self.intermediate_size // self.config.pretraining_tp
+            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+            up_proj_slices = self.up_proj.weight.split(slice, dim=0)
+            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+
+            gate_proj = torch.cat(
+                [F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1
+            )
+            up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
+
+            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
+            down_proj = [
+                F.linear(intermediate_states[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
+            ]
+            down_proj = sum(down_proj)
+        else:
+            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+        return down_proj
 
 class KblamLlamaAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' implemented as Rectangular attention"""
