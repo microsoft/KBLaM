@@ -44,8 +44,6 @@ from transformers.models.llama.modeling_llama import (
     _CONFIG_FOR_DOC,
     LLAMA_INPUTS_DOCSTRING,
     LLAMA_START_DOCSTRING,
-    LlamaDynamicNTKScalingRotaryEmbedding,
-    LlamaLinearScalingRotaryEmbedding,
     LlamaMLP,
     LlamaPreTrainedModel,
     LlamaRMSNorm,
@@ -53,6 +51,12 @@ from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
     repeat_kv,
 )
+
+from transformers.models.llama.modeling_llama_rotary import (
+    LlamaDynamicNTKScalingRotaryEmbedding,
+    LlamaLinearScalingRotaryEmbedding,
+)
+
 from transformers.utils import (
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
