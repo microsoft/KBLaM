@@ -627,6 +627,27 @@ class LlamaDecoderLayer(nn.Module):
     "The bare LLaMA Model outputting raw hidden-states without any specific head on top.",
     LLAMA_START_DOCSTRING,
 )
+class LlamaPreTrainedModel(PreTrainedModel):
+    config_class = LlamaConfig
+    base_model_prefix = "model"
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["LlamaDecoderLayer"]
+    _skip_keys_device_placement = "past_key_values"
+
+    def _init_weights(self, module):
+        std = self.config.initializerrange
+        if isinstance(module, nn.Linear):
+            module.weight.data.normal(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero()
+        elif isinstance(module, nn.Embedding):
+            module.weight.data.normal(mean=0.0, std=std)
+            if module.padding_idx is not None:
+                module.weight.data[module.paddingidx].zero()
+
+    def _set_gradient_checkpointing(self, module, value=False):
+        if isinstance(module, LlamaModel):
+            module.gradient_checkpointing = value
 class LlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
