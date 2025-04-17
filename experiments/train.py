@@ -8,40 +8,25 @@ from functools import partial
 from itertools import chain
 from typing import Callable, Dict, List, Optional
 
-import wandb
 import numpy as np
 import torch
-from torch.nn.parallel import DistributedDataParallel
 import transformers
+import wandb
+from accelerate import Accelerator
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.progress import (
-    BarColumn,
-    Progress,
-    SpinnerColumn,
-    TaskProgressColumn,
-    TextColumn,
-    TimeRemainingColumn,
-)
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from rich.theme import Theme
 from torch.nn import CrossEntropyLoss
+from torch.nn.parallel import DistributedDataParallel
 from transformers import AutoTokenizer
-from accelerate import Accelerator
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
-from kblam.utils.data_utils import (
-    augment_row,
-    generate_multi_entity_qa,
-    get_i_dont_know_ans,
-)
-from kblam.utils.train_utils import (
-    context_set_size_scheduler,
-    get_kb_embd,
-    setup_scheduler_and_optimizer,
-)
+from kblam.utils.data_utils import augment_row, generate_multi_entity_qa, get_i_dont_know_ans
+from kblam.utils.train_utils import context_set_size_scheduler, get_kb_embd, setup_scheduler_and_optimizer
 
 LOGFORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 LOGFORMAT_RICH = "%(message)s"
@@ -71,7 +56,7 @@ logging.basicConfig(
 # fmt: off
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=int, default=1)
-parser.add_argument("--train_dataset",type=str,default="gpt_data")
+parser.add_argument("--train_dataset",type=str,default="synthetic")
 parser.add_argument("--N", type=int, default=120000, help="Size of training set, select the first N samples for training")
 parser.add_argument("--B", type=int, default=10, help="Batch size")
 parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
@@ -85,7 +70,7 @@ parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick t
 parser.add_argument("--use_lr_decay", action="store_true")
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
-parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct"])
+parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B-Instruct", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
 parser.add_argument("--kb_size", type=int, default=None, help="The size of the KB set size")
@@ -795,6 +780,8 @@ def main():
     llm_type = args.llm_type
     hf_model_spec = args.hf_model_spec
     hf_token = args.hf_token
+    if not hf_token:
+        hf_token = os.getenv("HF_TOKEN")
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -833,8 +820,8 @@ def main():
 
     logger.info(f"Running on {device}")
 
-    logger.info("🚨 Started training 🚨")
-    logger.info(f"💽 Saving to  {model_save_dir}💽")
+    logger.info("Started training")
+    logger.info(f"Saving to  {model_save_dir}")
     if sep_query_head:
         os.environ["SEP_QUERY_HEAD"] = "TRUE"
         logger.info("Having seperate query head for KB!")
@@ -886,7 +873,7 @@ def main():
             device_map=device,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            token=hf_token,
+            # token=hf_token,
         )
     elif args.llm_type == "phi3":
         model = KBLaMPhi3ForCausalLM.from_pretrained(
@@ -934,7 +921,7 @@ def main():
         value_embds=value_embds,  # type: ignore
     )
 
-    logger.info("Model ready 🚀")
+    logger.info("Model ready")
 
     # Get the training started
     llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
