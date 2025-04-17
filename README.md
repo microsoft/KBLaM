@@ -4,21 +4,22 @@ This repo contains the official implementation of [KBLaM: Knowledge Base Augment
 
 Authors: Xi Wang, Liana Mikaelyan, Taketomo Isazawa, Mathew Salvaris, James Hensman.
 
-KBLaM is a new method for augmentating LLMs with external knowledge. 
+KBLaM is a new method for augmentating LLMs with external knowledge.
 Unlike Retrieval-Augmented Generation, KBLAM eliminates external
 retrieval modules, and unlike in-context learning, its computational overhead scales linearly with KB size rather than quadratically.
 
 ## Supported Models
 The following models from Hugging Face hub are currently supported:
- - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
- - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
- - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
+
+- [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
+- [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
+- [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
 
 To add support for new model types, you will need to update the model processing scripts to incorporate an adapter similar to `llama_model.py` in `src/kblam/models`.
 
 ## Setting up
 
-Install the kblam package with 
+Install the kblam package with
 
 ```
 pip install -e .
@@ -33,10 +34,9 @@ huggingface-cli login
 
 The experiments in the paper can be replicated by running the scripts in `./experiments`.
 
-
 ## Dataset Construction
 
-To run the synthetic dataset construction, you will need a valid Azure OpenAI endpoint. 
+To run the synthetic dataset construction, you will need a valid Azure OpenAI endpoint.
 
 To construct a synthetic KB and question-answer pairs use `dataset_generation/gen_synthetic_data.py`
 
@@ -50,14 +50,16 @@ The description of {entity_name} is {description}.
 To generate KB embeddings, use `dataset_generation/generate_kb_embeddings.py`.
 The embeddings we current support are [text-embedding-ada-002](https://openai.com/index/new-and-improved-embedding-model/) and [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
 
-
 ## Training
 
-To train the model, run the following (with the appropriate arguments):
+As an example of model training, see the following:
 
 ```
-python train.py --dataset synthetic_data --N 120000 --B 20 --total_steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug
+python train.py --dataset_dir <Your dataset directory> --train_dataset synthetic --N 120000 --B 20 --total_steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug --use_cached_embed
 ```
+
+Note in particular the `--use_cached_embed` argument. This should be set to prevent recomputation of embeddings, which can take significant time especially when using APIs such as OpenAI's text embeddings.
+There are a number of optional arguments in `train.py` that you may want to consult.
 
 ## Contributing
 
