@@ -7,6 +7,7 @@ import transformers
 from KBLaM.src.kblam.models.kblam_config import KBLaMConfig
 from KBLaM.src.kblam.models.llama3_model import KblamLlamaForCausalLM
 from KBLaM.src.kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from KBLaM.src.kblam.models.bitnet_model import KBLaMBitNetForCausalLM
 
 instruction_prompts = """
 Please answer questions based on the given text with format: "The {property} of {name} is {description}"
@@ -62,16 +63,18 @@ def _format_Q_phi3(Q: str):
 model_question_format_mapping = {
     KblamLlamaForCausalLM: _format_Q_llama,
     KBLaMPhi3ForCausalLM: _format_Q_phi3,
+    KBLaMBitNetForCausalLM: _format_Q_llama,
 }
 model_prune_format_mapping = {
     KblamLlamaForCausalLM: _prune_for_llama,
     KBLaMPhi3ForCausalLM: _prune_for_phi3,
+    KBLaMBitNetForCausalLM: _prune_for_llama,
 }
 
 
 def answer_question(
     tokenizer: transformers.PreTrainedTokenizer,
-    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
+    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
     Q: str,
     kb=None,
     kb_config: Optional[KBLaMConfig] = None,

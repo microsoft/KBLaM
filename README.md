@@ -13,10 +13,17 @@ The following models from Hugging Face hub are currently supported:
  - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
  - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
  - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
+ - [microsoft/bitnet-b1.58-2B-4T-bf16](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-bf16)
 
 To add support for new model types, you will need to update the model processing scripts to incorporate an adapter similar to `llama_model.py` in `src/kblam/models`.
 
 ## Setting up
+
+Create and activate a Conda environment:
+```bash
+conda create -n kblam python=3.10.0
+conda activate kblam
+```
 
 Install the kblam package with 
 
@@ -53,10 +60,30 @@ The embeddings we current support are [text-embedding-ada-002](https://openai.co
 
 ## Training
 
-To train the model, run the following (with the appropriate arguments):
+To train a model, run the `train.py` script with the desired arguments. The `--llm_type` argument specifies the base model architecture.
 
+**Example for LLaMA-3:**
+```bash
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
 ```
-python train.py --dataset synthetic_data --N 120000 --B 20 --total_steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug
+
+**Example for Phi-3:**
+```bash
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+**Example for BitNet:**
+```bash
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+## Evaluation
+
+To evaluate a trained model, use the `eval.py` script. You can evaluate generation quality, accuracy, and refusal.
+
+**Example for Generation Evaluation:**
+```bash
+python experiments/eval.py generation --llm_type bitnet --model_dir path/to/your/finetuned/checkpoint --encoder_dir path/to/your/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
 ```
 
 ## Contributing

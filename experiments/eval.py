@@ -20,6 +20,7 @@ from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
 from kblam.utils.data_utils import aug_row, generate_multi_entity_qa
 from kblam.utils.eval_utils import (
     instruction_prompts,
@@ -28,6 +29,7 @@ from kblam.utils.eval_utils import (
     zero_shot_prompt_multi_entities,
     _format_Q_llama,
     _format_Q_phi3,
+    _format_Q_bitnet,
     model_prune_format_mapping,
     answer_question,
     softmax,
@@ -342,7 +344,7 @@ parent_parser.add_argument(
     "--llm_type",
     type=str,
     default="phi3",
-    choices=["llama3", "phi3"],
+    choices=["llama3", "phi3", "bitnet"],
     help="Type of language model to use",
 )
 parent_parser.add_argument(
@@ -641,6 +643,15 @@ def _prepare_models(
                 torch_dtype="auto",
                 trust_remote_code=True,
             )
+    elif llm_type == "bitnet":
+        model = KBLaMBitNetForCausalLM.from_pretrained(
+            model_path,
+            device_map="cuda",
+            torch_dtype="auto",
+            trust_remote_code=True,
+        )
+        if query_head_path:
+            model.load_query_head(query_head_path)
     else:
         model = KBLaMPhi3ForCausalLM.from_pretrained(
             model_path,
@@ -706,7 +717,7 @@ def eval_accuracy(
 
     kb_embedding_real = kb_retriever.get_key_embeddings(dataset_subset_idx)
 
-    format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3}
+    format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet}
 
     if not fancy_question:
         input_strs_gen = (dataset_subset[i]["Q"] for i in range(test_batch_size))

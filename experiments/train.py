@@ -32,6 +32,7 @@ from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
 from kblam.utils.data_utils import (
     augment_row,
     generate_multi_entity_qa,
@@ -85,7 +86,7 @@ parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick t
 parser.add_argument("--use_lr_decay", action="store_true")
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
-parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct"])
+parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct", "microsoft/bitnet-b1.58-2B-4T-bf16"])
 parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
 parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
 parser.add_argument("--kb_size", type=int, default=None, help="The size of the KB set size")
@@ -99,7 +100,7 @@ parser.add_argument("--kb_token_layer_frequency", type=int, default=3, help="Int
 parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
 parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
 parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
-parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3"])
+parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
 parser.add_argument("--max_seq_len",type=int,default=None)
 # fmt: on
 
@@ -163,6 +164,10 @@ def _format_QA_phi3(Q: str, A: str):
     return "<|user|>\n" + Q + "<|end|>\n" + "<|assistant|>\n" + A + "<|end|>\n"
 
 
+def _format_QA_bitnet(Q: str, A: str):
+    return f"USER: {Q} ASSISTANT: {A}"
+
+
 def _create_labels_for_llama(input_ids: torch.Tensor, input_strs: List[str], tokenizer):
     # Not sure this is correct. This method simply masks the <|start_header_id|>user<|end_header_id|> then leaves the rest in the labels
     # Possibly what they want is to mask out the query. To do that swap the index from the tokenizer below from 1 to 2
@@ -189,6 +194,34 @@ def _create_labels_for_phi3(input_ids: torch.Tensor, input_strs: List[str], toke
     for b in range(len(input_strs)):
         answer_mask[b, : (answer_indices[b].item() + 1)] = 0
     labels = input_ids * answer_mask + (1 - answer_mask) * (-100)
+    return labels
+
+
+def _create_labels_for_bitnet(input_ids: torch.Tensor, input_strs: List[str], tokenizer):
+    labels = input_ids.clone()
+    pad_token_id = tokenizer.pad_token_id
+
+    for i, text in enumerate(input_strs):
+        # Assuming left padding
+
+        # Find where the actual content starts
+        content_start_index = 0
+        for j in range(input_ids.shape[1]):
+            if input_ids[i, j] != pad_token_id:
+                content_start_index = j
+                break
+
+        # Find the answer part
+        answer_marker = "ASSISTANT: "
+        answer_start_pos = text.find(answer_marker)
+
+        if answer_start_pos != -1:
+            prompt_part = text[: answer_start_pos + len(answer_marker)]
+            prompt_token_len = len(tokenizer(prompt_part, add_special_tokens=False).input_ids)
+
+            # Mask the prompt tokens
+            mask_end_index = content_start_index + prompt_token_len
+            labels[i, :mask_end_index] = -100
     return labels
 
 
@@ -379,7 +412,7 @@ def _get_parameter_count(encoder):
 
 
 def _get_phi3_query_head_parameters(
-    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
+    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM | KBLaMBitNetForCausalLM,
     sep_query_head: bool,
     kb_token_layer_frequency: int,
 ):
@@ -407,7 +440,7 @@ def _get_phi3_query_head_parameters(
 
 
 def _get_llama3_query_head_parameters(
-    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM,
+    model: KblamLlamaForCausalLM | KBLaMPhi3ForCausalLM | KBLaMBitNetForCausalLM,
     sep_query_head: bool,
     kb_token_layer_frequency: int,
 ):
@@ -428,6 +461,33 @@ def _get_llama3_query_head_parameters(
         else:
             if "q_proj.weight" in name:
                 layer_id = int(re.search(r"\d+", name)[0])  # type: ignore
+                if layer_id % kb_token_layer_frequency == 0:
+                    param.requires_grad = True
+                    llm_q_params.append(param)
+    return llm_q_params
+
+
+def _get_bitnet_query_head_parameters(
+    model: KBLaMBitNetForCausalLM,
+    sep_query_head: bool,
+    kb_token_layer_frequency: int,
+):
+    llm_q_params = []
+    for name, param in model.named_parameters():
+        if sep_query_head:
+            if "q_proj.weight" in name:
+                layer_id = int(re.search(r"\d+", name)[0])
+                if layer_id % kb_token_layer_frequency == 0:
+                    old_weight = param.detach()
+            if "q_proj_new.weight" in name:
+                layer_id = int(re.search(r"\d+", name)[0])
+                if layer_id % kb_token_layer_frequency == 0:
+                    param.copy_(old_weight)
+                    param.requires_grad = True
+                    llm_q_params.append(param)
+        else:
+            if "q_proj.weight" in name:
+                layer_id = int(re.search(r"\d+", name)[0])
                 if layer_id % kb_token_layer_frequency == 0:
                     param.requires_grad = True
                     llm_q_params.append(param)
@@ -493,7 +553,7 @@ class KBRetriever:
 class Trainer:
     def __init__(
         self,
-        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
+        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
         kb_token_layer_frequency: int,
@@ -893,6 +953,13 @@ def main():
             llm_model_spec,
             device_map=device,
             torch_dtype="auto",
+            trust_remote_code=True,
+        )
+    elif args.llm_type == "bitnet":
+        model = KBLaMBitNetForCausalLM.from_pretrained(
+            llm_model_spec,
+            device_map=device,
+            torch_dtype=torch.bfloat16, # BitNet uses bfloat16
             trust_remote_code=True,
         )
     else:
