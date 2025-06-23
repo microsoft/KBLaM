@@ -41,7 +41,6 @@ from transformers.modeling_outputs import (
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (
-    _CONFIG_FOR_DOC,
     LLAMA_INPUTS_DOCSTRING,
     LLAMA_START_DOCSTRING,
     LlamaDynamicNTKScalingRotaryEmbedding,
@@ -853,7 +852,7 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
 
     @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(
-        output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC
+        output_type=CausalLMOutputWithPast, config_class=LlamaConfig
     )
     def forward(
         self,
