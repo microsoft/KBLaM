@@ -41,8 +41,6 @@ from transformers.modeling_outputs import (
 )
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import (
-    LLAMA_INPUTS_DOCSTRING,
-    LLAMA_START_DOCSTRING,
     LlamaDynamicNTKScalingRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
     LlamaMLP,
@@ -53,8 +51,6 @@ from transformers.models.llama.modeling_llama import (
     repeat_kv,
 )
 from transformers.utils import (
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
     logging,
     replace_return_docstrings,
 )
@@ -496,10 +492,10 @@ class LlamaDecoderLayer(nn.Module):
         return outputs
 
 
-@add_start_docstrings(
-    "The bare LLaMA Model outputting raw hidden-states without any specific head on top.",
-    LLAMA_START_DOCSTRING,
-)
+# @add_start_docstrings(
+#     "The bare LLaMA Model outputting raw hidden-states without any specific head on top.",
+#     LLAMA_START_DOCSTRING,
+# )
 class LlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
@@ -534,7 +530,7 @@ class LlamaModel(LlamaPreTrainedModel):
     def set_input_embeddings(self, value):
         self.embed_tokens = value
 
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
+    # @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -850,7 +846,7 @@ class KblamLlamaForCausalLM(LlamaPreTrainedModel):
             )
         self.config.sep_query_head = True
 
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
+    # @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
     @replace_return_docstrings(
         output_type=CausalLMOutputWithPast, config_class=LlamaConfig
     )
