@@ -43,9 +43,13 @@ The experiments in the paper can be replicated by running the scripts in `./expe
 
 ## Dataset Construction
 
-To run the synthetic dataset construction, you will need a valid Azure OpenAI endpoint. 
+The dataset construction process involves two main steps.
 
-To construct a synthetic KB and question-answer pairs use `dataset_generation/gen_synthetic_data.py`
+### Step 1: Constructing the Dataset (Optional)
+
+This step involves creating a new synthetic dataset from scratch.
+
+To construct a synthetic KB and question-answer pairs, use `dataset_generation/gen_synthetic_data.py`. 
 
 The question-answer pairs are constructed in the form:
 
@@ -54,27 +58,70 @@ What is the description of {entity_name}?
 The description of {entity_name} is {description}.
 ```
 
-To generate KB embeddings, use `dataset_generation/generate_kb_embeddings.py`.
-The embeddings we current support are [text-embedding-ada-002](https://openai.com/index/new-and-improved-embedding-model/) and [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
+**Alternatively, you can skip this step** and use the pre-generated datasets provided in the `datasets/` directory (`synthetic.json` or `enron.json`).
+
+### Step 2: Generating KB Embeddings (Required)
+
+This step takes a dataset file (e.g., `synthetic.json`) and generates the knowledge base embeddings required for training. You have two options for this process: using a paid OpenAI service or a free, local model.
+
+#### Option A: OpenAI Embeddings (Paid)
+This option uses the `text-embedding-ada-002` model via an Azure OpenAI endpoint. It is generally faster but will incur costs.
+
+```bash
+python dataset_generation/generate_kb_embeddings.py --model_name "ada-embeddings" --dataset_path "./datasets/synthetic.json" --dataset_name "synthetic" --endpoint_url "YOUR_AZURE_OPENAI_ENDPOINT" --output_path "./datasets"
+```
+- `--dataset_path`: Path to the input dataset file (e.g., `datasets/synthetic.json`).
+- `--dataset_name`: A prefix for the output embedding files. The script will generate files like `synthetic_OAI_embd_key.npy`.
+- `--endpoint_url`: **Required.** Your Azure OpenAI endpoint URL.
+
+#### Option B: Local Sentence Transformer (Free)
+This option uses the `all-MiniLM-L6-v2` model, which runs on your local machine. It is free but may be slower, especially without a GPU.
+
+```bash
+python dataset_generation/generate_kb_embeddings.py --model_name "all-MiniLM-L6-v2" --dataset_path "./datasets/synthetic.json" --dataset_name "synthetic" --output_path "./datasets"
+```
+- `--dataset_path`: Path to the input dataset file (e.g., `datasets/synthetic.json`).
+- `--dataset_name`: A prefix for the output embedding files. The script will generate files like `synthetic_all-MiniLM-L6-v2_embd_key.npy`.
 
 
 ## Training
 
-To train a model, run the `train.py` script with the desired arguments. The `--llm_type` argument specifies the base model architecture.
+To train a model, run the `train.py` script with the desired arguments. The `--llm_type` argument specifies the base model architecture, and the `--encoder_spec` argument must match the model used to generate your KB embeddings in Step 2.
 
-**Example for LLaMA-3:**
+### LLaMA-3 Examples
+
+**Training with OpenAI Embeddings:**
 ```bash
 python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
-**Example for Phi-3:**
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+### Phi-3 Examples
+
+**Training with OpenAI Embeddings:**
 ```bash
 python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
-**Example for BitNet:**
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+### BitNet Examples
+
+**Training with OpenAI Embeddings:**
 ```bash
 python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 ## Evaluation

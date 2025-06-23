@@ -37,15 +37,47 @@ logger = logging.get_logger(__name__)
 def relu2(x):
     return torch.pow(F.relu(x), 2)
 
+# Copied from transformers.models.llama.modeling_llama._make_causal_mask
+def _make_causal_mask(
+    input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
+):
+    """
+    Make causal mask used for bi-directional self-attention.
+    """
+    bsz, tgt_len = input_ids_shape
+    mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
+    mask_cond = torch.arange(mask.size(-1), device=device)
+    mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
+    mask = mask.to(dtype)
+
+    if past_key_values_length > 0:
+        mask = torch.cat([torch.zeros(tgt_len, past_key_values_length, dtype=dtype, device=device), mask], dim=-1)
+    return mask[None, None, :, :].expand(bsz, 1, tgt_len, tgt_len + past_key_values_length)
+
+
+# Copied from transformers.models.llama.modeling_llama._expand_mask
+def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
+    """
+    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    """
+    bsz, src_len = mask.size()
+    tgt_len = tgt_len if tgt_len is not None else src_len
+
+    expanded_mask = mask[:, None, None, :].expand(bsz, 1, tgt_len, src_len).to(dtype)
+
+    inverted_mask = 1.0 - expanded_mask
+
+    return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
+
 class KBLaMBitNetMLP(nn.Module):
     def __init__(self, config: configuration_bitnet.BitNetConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = modeling_bitnet.BitLinear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = modeling_bitnet.BitLinear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = modeling_bitnet.BitLinear(self.intermediate_size, self.hidden_size, bias=False)
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = relu2
 
     def forward(self, x):
@@ -72,19 +104,17 @@ class KBLaMBitNetAttention(nn.Module):
         self.max_position_embeddings = config.max_position_embeddings
         self.rope_theta = config.rope_theta
 
-        self.q_proj = modeling_bitnet.BitLinear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.k_proj = modeling_bitnet.BitLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = modeling_bitnet.BitLinear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.o_proj = modeling_bitnet.BitLinear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
+        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
         
         # New query head for KB interaction
-        self.q_proj_new = modeling_bitnet.BitLinear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
+        self.q_proj_new = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
 
-        self.rotary_emb = modeling_bitnet.BitnetRotaryEmbedding(
-            self.head_dim,
-            max_position_embeddings=self.max_position_embeddings,
-            base=self.rope_theta,
-        )
+        # Projection for KB embeddings
+        self.kb_k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.kb_v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
 
     def forward(
         self,
@@ -96,6 +126,7 @@ class KBLaMBitNetAttention(nn.Module):
         use_cache: bool = False,
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -111,7 +142,7 @@ class KBLaMBitNetAttention(nn.Module):
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
         
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
+        cos, sin = position_embeddings
         query_states, key_states = modeling_bitnet.apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         if past_key_value is not None:
@@ -121,23 +152,52 @@ class KBLaMBitNetAttention(nn.Module):
         past_key_value = (key_states, value_states) if use_cache else None
 
         # KBLaM Rectangular Attention Logic
-        if kb_config is not None and self.layer_idx % kb_config.kb_layer_frequency == 0:
-            kb_key_states, kb_value_states = kb_kvs
+        if kb_config is not None and self.layer_idx is not None and self.layer_idx % kb_config.kb_layer_frequency == 0:
+            kb_key_states_full, kb_value_states_full = kb_kvs
+
+            # Calculate the index for the current layer's slice of the KB embedding
+            kb_layer_index = self.layer_idx // kb_config.kb_layer_frequency
+            start_index = kb_layer_index * self.hidden_size
+            end_index = (kb_layer_index + 1) * self.hidden_size
+
+            # Slice the embeddings for the current layer
+            kb_key_states_layer = kb_key_states_full[:, :, start_index:end_index]
+            kb_value_states_layer = kb_value_states_full[:, :, start_index:end_index]
+
+            # Project the sliced KB embeddings to the correct dimension for K/V heads
+            kb_key_states_proj = self.kb_k_proj(kb_key_states_layer)
+            kb_value_states_proj = self.kb_v_proj(kb_value_states_layer)
+
+            # Reshape for attention
+            num_kb_entries = kb_key_states_proj.shape[1]
+            kb_key_states = kb_key_states_proj.view(
+                bsz, num_kb_entries, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
+            kb_value_states = kb_value_states_proj.view(
+                bsz, num_kb_entries, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
+
             kb_query_states = self.q_proj_new(hidden_states)
             kb_query_states = kb_query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
             # Repeat KV heads for GQA
             key_states = modeling_bitnet.repeat_kv(key_states, self.num_key_value_groups)
             value_states = modeling_bitnet.repeat_kv(value_states, self.num_key_value_groups)
+            kb_key_states = modeling_bitnet.repeat_kv(kb_key_states, self.num_key_value_groups)
+            kb_value_states = modeling_bitnet.repeat_kv(kb_value_states, self.num_key_value_groups)
             
             # No RoPE for KB queries
-            attn_weights_kb = torch.matmul(kb_query_states, kb_key_states.transpose(2, 3)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+            attn_weights_kb = torch.matmul(kb_query_states, kb_key_states.transpose(2, 3)) / torch.sqrt(
+                torch.tensor(self.head_dim, dtype=torch.float32)
+            )
             
             # Attention score scaling for KB length generalization
             if kb_config.kb_length_scaling:
                 attn_weights_kb += (torch.log(torch.tensor(kb_config.kb_max_train_triples)) - torch.log(torch.tensor(kb_key_states.shape[2]))).to(attn_weights_kb.device)
 
-            attn_weights_prompt = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+            attn_weights_prompt = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(
+                torch.tensor(self.head_dim, dtype=torch.float32)
+            )
 
             if attention_mask is not None:
                 attn_weights_prompt = attn_weights_prompt + attention_mask
@@ -146,15 +206,17 @@ class KBLaMBitNetAttention(nn.Module):
             attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             
-            # Separate attention outputs and combine
-            attn_output_kb = torch.matmul(attn_weights[:, :, :, :kb_key_states.shape[2]], kb_value_states)
-            attn_output_prompt = torch.matmul(attn_weights[:, :, :, kb_key_states.shape[2]:], value_states)
-            attn_output = attn_output_kb + attn_output_prompt
+            # The split in the original code is tricky. A single matmul after concatenating
+            # the value states is equivalent and less error-prone.
+            combined_value_states = torch.cat((kb_value_states, value_states), dim=2)
+            attn_output = torch.matmul(attn_weights, combined_value_states)
         else:
             # Standard attention if not a KB layer
             key_states = modeling_bitnet.repeat_kv(key_states, self.num_key_value_groups)
             value_states = modeling_bitnet.repeat_kv(value_states, self.num_key_value_groups)
-            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32))
+            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(
+                torch.tensor(self.head_dim, dtype=torch.float32)
+            )
 
             if attention_mask is not None:
                 attn_weights = attn_weights + attention_mask
@@ -178,8 +240,8 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = KBLaMBitNetAttention(config=config, layer_idx=layer_idx)
         self.mlp = KBLaMBitNetMLP(config)
-        self.input_layernorm = modeling_bitnet.BitnetSubln(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = modeling_bitnet.BitnetSubln(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(
         self,
@@ -191,6 +253,7 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -205,6 +268,7 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             use_cache=use_cache,
             kb_kvs=kb_kvs,
             kb_config=kb_config,
+            position_embeddings=position_embeddings,
         )
         hidden_states = residual + hidden_states
 
@@ -235,7 +299,8 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         self.layers = nn.ModuleList(
             [KBLaMBitNetDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = modeling_bitnet.BitnetSubln(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = modeling_bitnet.BitNetRotaryEmbedding(config=config)
 
         self.gradient_checkpointing = False
         self.post_init()
@@ -245,6 +310,29 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
+
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        # create causal mask
+        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        combined_attention_mask = None
+        if input_shape[-1] > 1:
+            combined_attention_mask = _make_causal_mask(
+                input_shape,
+                inputs_embeds.dtype,
+                device=inputs_embeds.device,
+                past_key_values_length=past_key_values_length,
+            )
+
+        if attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
+                inputs_embeds.device
+            )
+            combined_attention_mask = (
+                expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
+            )
+
+        return combined_attention_mask
 
     def forward(
         self,
@@ -299,6 +387,8 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
 
+        position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
+
         # 4d mask is passed through the layers
         attention_mask = self._prepare_decoder_attention_mask(
             attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
@@ -324,6 +414,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
                 use_cache=use_cache,
                 kb_kvs=kb_kvs,
                 kb_config=kb_config,
+                position_embeddings=position_embeddings,
             )
 
             hidden_states = layer_outputs[0]

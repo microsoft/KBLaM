@@ -592,6 +592,9 @@ class Trainer:
         elif isinstance(llm_model, KblamLlamaForCausalLM):  # llama
             self._get_batch = partial(get_batch, _format_QA_llama, _create_labels_for_llama)
             self._get_params = _get_llama3_query_head_parameters
+        elif isinstance(llm_model, KBLaMBitNetForCausalLM):
+            self._get_batch = partial(get_batch, _format_QA_bitnet, _create_labels_for_bitnet)
+            self._get_params = _get_bitnet_query_head_parameters
         else:
             raise ValueError(f"{llm_model} not recognised")
 
@@ -990,6 +993,8 @@ def main():
         kb_config = KBLaMConfig(
             sep_query_head=sep_query_head,
             kb_layer_frequency=kb_token_layer_frequency,
+            kb_length_scaling=length_invariance,
+            kb_max_train_triples=N,
         )
 
     encoder.train()
