@@ -24,7 +24,7 @@ from typing import Optional, Tuple, List, Union
 
 from transformers.utils import logging
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.models.bitnet.configuration_bitnet import BitnetConfig
+from transformers import BitnetConfig
 
 # These imports depend on the custom transformers fork specified in plan.md
 from transformers.models.bitnet.modeling_bitnet import (
