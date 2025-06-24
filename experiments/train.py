@@ -1037,7 +1037,7 @@ def main():
         use_data_aug=use_data_aug,
         multi_entities=multi_entities,
         use_extended_qa=use_extended_qa,
-        save_period=3000,
+        save_period=100,
         resumed_step=resumed_step,
         kb_config=kb_config,
     )
