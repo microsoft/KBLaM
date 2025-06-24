@@ -791,6 +791,7 @@ class Trainer:
                                 model_ckpt_name,
                                 is_main_process=self.accelerator.is_main_process,
                                 save_function=self.accelerator.save,
+                                safe_serialization=False,
                             )
 
                             self.logger.info("Saving encoder...")
