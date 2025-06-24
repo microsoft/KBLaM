@@ -21,7 +21,7 @@ from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
-from kblam.utils.data_utils import aug_row, generate_multi_entity_qa
+from kblam.utils.data_utils import augment_row, generate_multi_entity_qa
 from kblam.utils.eval_utils import (
     instruction_prompts,
     instruction_prompts_multi_entities,
@@ -722,7 +722,7 @@ def eval_accuracy(
     if not fancy_question:
         input_strs_gen = (dataset_subset[i]["Q"] for i in range(test_batch_size))
     else:
-        input_strs_gen = (aug_row(dataset_subset[i]) for i in range(test_batch_size))
+        input_strs_gen = (augment_row(dataset_subset[i]) for i in range(test_batch_size))
     input_strs = [format_func_map[llm_type](ex) for ex in input_strs_gen]
 
     tokenizer_output = tokenizer(input_strs, return_tensors="pt", padding=True).to(
