@@ -143,17 +143,17 @@ The examples below show how to evaluate for generation quality. The command stru
 
 **Note:** You must provide a Hugging Face token to evaluate LLaMA models.
 ```bash
-python experiments/eval.py generation --llm_type llama3 --model_dir path/to/your/llama3/checkpoint --encoder_dir path/to/your/llama3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --hf_token YOUR_HF_TOKEN
+python experiments/eval.py generation --llm_type llama3 --llm_base_dir meta-llama/Llama-3.2-1B-Instruct --model_dir path/to/your/llama3/checkpoint --encoder_dir path/to/your/llama3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --hf_token YOUR_HF_TOKEN
 ```
 
 ### Phi-3 Example
 ```bash
-python experiments/eval.py generation --llm_type phi3 --model_dir path/to/your/phi3/checkpoint --encoder_dir path/to/your/phi3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
+python experiments/eval.py generation --llm_type phi3 --llm_base_dir microsoft/Phi-3-mini-4k-instruct  --model_dir path/to/your/phi3/checkpoint --encoder_dir path/to/your/phi3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
 ```
 
 ### BitNet Example
 ```bash
-python experiments/eval.py generation --llm_type bitnet --model_dir path/to/your/bitnet/checkpoint --encoder_dir path/to/your/bitnet/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
+python experiments/eval.py generation --llm_type bitnet --llm_base_dir microsoft/bitnet-b1.58-2B-4T-bf16 --model_dir path/to/your/bitnet/checkpoint --encoder_dir path/to/your/bitnet/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
 ```
 
 ## Contributing
