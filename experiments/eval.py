@@ -689,7 +689,7 @@ def _prepare_models(
         device=torch.device("cuda"),
     )
 
-    encoder.load_state_dict(torch.load(encoder_path))
+    encoder.load_state_dict(torch.load(os.path.join(encoder_path, "encoder.pt")))
     return tokenizer, encoder, model, kb_config
 
 
