@@ -42,7 +42,6 @@ logging.set_verbosity_warning()
 rouge = evaluate.load("rouge")
 bert_score = evaluate.load("bertscore")
 
-
 class KBRetriever:
     def __init__(
         self,

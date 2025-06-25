@@ -9,6 +9,7 @@ Unlike Retrieval-Augmented Generation, KBLAM eliminates external
 retrieval modules, and unlike in-context learning, its computational overhead scales linearly with KB size rather than quadratically.
 
 ## Supported Models
+
 The following models from Hugging Face hub are currently supported:
  - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
  - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
@@ -65,6 +66,7 @@ The description of {entity_name} is {description}.
 This step takes a dataset file (e.g., `synthetic.json`) and generates the knowledge base embeddings required for training. You have two options for this process: using a paid OpenAI service or a free, local model.
 
 #### Option A: OpenAI Embeddings (Paid)
+
 This option uses the `text-embedding-ada-002` model via an Azure OpenAI endpoint. It is generally faster but will incur costs.
 
 ```bash
@@ -75,6 +77,7 @@ python dataset_generation/generate_kb_embeddings.py --model_name "ada-embeddings
 - `--endpoint_url`: **Required.** Your Azure OpenAI endpoint URL.
 
 #### Option B: Local Sentence Transformer (Free)
+
 This option uses the `all-MiniLM-L6-v2` model, which runs on your local machine. It is free but may be slower, especially without a GPU.
 
 ```bash
@@ -87,6 +90,10 @@ python dataset_generation/generate_kb_embeddings.py --model_name "all-MiniLM-L6-
 ## Training
 
 To train a model, run the `train.py` script with the desired arguments. The `--llm_type` argument specifies the base model architecture, and the `--encoder_spec` argument must match the model used to generate your KB embeddings in Step 2.
+
+Note in particular the `--use_cached_embed` argument. This should be set to prevent recomputation of embeddings, which can take significant time especially when using APIs such as OpenAI's text embeddings.More actions
+
+There are a number of optional arguments in `train.py` that you may want to consult.
 
 ### LLaMA-3 Examples
 
