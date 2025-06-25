@@ -130,35 +130,42 @@ def perform_eval(
             )
             answer = A
 
+        prompt_to_split = Q
         if eval_mode == "kb":
-            model_output = answer_question(
+            raw_output = answer_question(
                 tokenizer,
                 model,
                 Q,
                 kb=kb_embedding,
                 topk_size=topk_size,
                 kb_config=kb_config,
-            ).split(Q)[1]
+            )
         elif eval_mode == "icl":
             if multi_entites != -1:
                 ins_prompt = instruction_prompts_multi_entities
             else:
                 ins_prompt = instruction_prompts
-            model_output = answer_question(
+            prompt_to_split = ins_prompt + prompt_strs + Q
+            raw_output = answer_question(
                 tokenizer,
                 model,
-                ins_prompt + prompt_strs + Q,
+                prompt_to_split,
                 kb=None,
                 kb_config=kb_config,
-            ).split(Q)[1]
+            )
         elif eval_mode == "zeroshot":
             if multi_entites != -1:
                 ins_prompt = zero_shot_prompt_multi_entities
             else:
                 ins_prompt = zero_shot_prompt
-            model_output = answer_question(
-                tokenizer, model, ins_prompt + Q, kb=None, kb_config=kb_config
-            ).split(Q)[1]
+            prompt_to_split = ins_prompt + Q
+            raw_output = answer_question(
+                tokenizer, model, prompt_to_split, kb=None, kb_config=kb_config
+            )
+        
+        output_parts = raw_output.split(prompt_to_split)
+        model_output = output_parts[1] if len(output_parts) > 1 else raw_output
+
         # print(model_output)
         if remove_sorry:
             if "sorry" in model_output:
