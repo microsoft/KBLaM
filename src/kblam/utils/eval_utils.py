@@ -103,6 +103,9 @@ def answer_question(
         tokenizer_output["attention_mask"],
     )
 
+    if kb_config is not None and topk_size > -1:
+        kb_config.top_k_kb = topk_size
+
     with torch.autograd.no_grad():
         outputs = model.generate(
             input_ids=input_ids,
@@ -116,7 +119,6 @@ def answer_question(
             save_attention_weights=save_attention_weights,
             attention_file_base_name=attention_file_base_name,
             attention_save_loc=attention_save_loc,
-            topk_size=topk_size,
         ).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 
