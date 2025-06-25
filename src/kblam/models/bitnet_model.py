@@ -595,6 +595,15 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         if kb_config is not None and topk_size > -1:
             kb_config.top_k_kb = topk_size
 
+        # Expand kb_kvs to match batch size
+        kb_kvs = kwargs.get("kb_kvs")
+        if kb_kvs is not None:
+            if kb_kvs[0].ndim == 2:
+                batch_size = input_ids.shape[0]
+                keys = kb_kvs[0].unsqueeze(0).expand(batch_size, -1, -1)
+                values = kb_kvs[1].unsqueeze(0).expand(batch_size, -1, -1)
+                kwargs["kb_kvs"] = (keys, values)
+
         if past_key_values:
             input_ids = input_ids[:, -1:]
 
