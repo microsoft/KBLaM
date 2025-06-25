@@ -408,7 +408,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
                 use_cache = False
 
         past_key_values_length = 0
-        if past_key_values is not None:
+        if use_cache and past_key_values is not None and len(past_key_values) > 0:
             past_key_values_length = past_key_values[0][0].shape[2]
 
         if position_ids is None:
@@ -439,7 +439,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
+            past_key_value = past_key_values[idx] if past_key_values else None
 
             layer_outputs = decoder_layer(
                 hidden_states,

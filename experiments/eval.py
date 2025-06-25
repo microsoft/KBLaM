@@ -1085,7 +1085,7 @@ def eval():
             kb_embedding_key, kb_embedding_val = kb_embedding_real
             kb_embedding_real = (kb_embedding_key, kb_embedding_val)
 
-        format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3}
+        format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet}
 
         input_strs = [
             format_func_map[llm_type](dataset_subset[i]["Q"])
@@ -1179,7 +1179,7 @@ def eval():
         weights = []
         kb_size = subset_size
         for idx in range(32)[left:right]:
-            if idx % 3 == 0:
+            if idx % kb_layer_frequency == 0:
                 weight = np.load(os.path.join(save_dir, f"{config_str}_{idx}.npy"))
                 weights.append(weight[..., :kb_size].reshape(kb_size, -1, kb_size))
         print(len(weights))
