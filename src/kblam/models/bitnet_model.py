@@ -25,6 +25,7 @@ from typing import Optional, Tuple, List, Union
 from transformers.utils import logging
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.models.bitnet import configuration_bitnet, modeling_bitnet
+from transformers.generation.utils import GenerationMixin
 
 # These imports depend on the custom transformers fork specified in plan.md
 
@@ -456,7 +457,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         )
 
 
-class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel):
+class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.model = KBLaMBitNetModel(config)
@@ -593,3 +594,15 @@ class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel):
             }
         )
         return model_inputs
+
+    @staticmethod
+    def _reorder_cache(past_key_values, beam_idx):
+        reordered_past = ()
+        for layer_past in past_key_values:
+            reordered_past += (
+                tuple(
+                    past_state.index_select(0, beam_idx.to(past_state.device))
+                    for past_state in layer_past
+                ),
+            )
+        return reordered_past
