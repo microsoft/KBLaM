@@ -365,6 +365,12 @@ parent_parser.add_argument(
 parent_parser.add_argument(
     "--query_head_path", type=str, default="", help="Path to load KB head from"
 )
+parent_parser.add_argument(
+    "--topk_size",
+    type=int,
+    default=-1,
+    help="The number of top-k entities to retrieve from the knowledge base.",
+)
 
 # Create subparsers
 subparsers = parser.add_subparsers(dest="command", required=True)

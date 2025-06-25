@@ -191,6 +191,22 @@ class KBLaMBitNetAttention(nn.Module):
                 torch.tensor(self.head_dim, dtype=torch.float32)
             )
             
+            # Pruning logic for top-k KB selection
+            if kb_config.top_k_kb > 0:
+                kb_len = kb_key_states.shape[2]
+                topk = min(kb_len, kb_config.top_k_kb)
+                if topk < kb_len:
+                    # Sum attention weights across heads and query sequence length to get a score per KB entry
+                    top_idx = attn_weights_kb.sum(dim=(1, 2)).topk(topk, dim=-1)[1]
+
+                    # Gather the top-k keys, values, and corresponding attention weights
+                    idx_expanded_kv = top_idx.unsqueeze(1).unsqueeze(-1).expand(-1, self.num_heads, topk, self.head_dim)
+                    kb_key_states = torch.gather(kb_key_states, 2, idx_expanded_kv)
+                    kb_value_states = torch.gather(kb_value_states, 2, idx_expanded_kv)
+
+                    idx_expanded_attn = top_idx.unsqueeze(1).unsqueeze(1).expand(-1, self.num_heads, q_len, topk)
+                    attn_weights_kb = torch.gather(attn_weights_kb, 3, idx_expanded_attn)
+
             # Attention score scaling for KB length generalization
             if kb_config.kb_length_scaling:
                 attn_weights_kb += (torch.log(torch.tensor(kb_config.kb_max_train_triples)) - torch.log(torch.tensor(kb_key_states.shape[2]))).to(attn_weights_kb.device)
@@ -542,6 +558,12 @@ class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel):
         for key in kwarg_keys:
             if key not in kwargs:
                 kwargs[key] = None
+        
+        # Handle topk_size for KB pruning during evaluation
+        kb_config = kwargs["kb_config"]
+        topk_size = kwargs.get("topk_size", -1)
+        if kb_config is not None and topk_size > -1:
+            kb_config.top_k_kb = topk_size
 
         if past_key_values:
             input_ids = input_ids[:, -1:]
@@ -567,7 +589,7 @@ class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel):
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
                 "kb_kvs": kwargs["kb_kvs"],
-                "kb_config": kwargs["kb_config"],
+                "kb_config": kb_config,
             }
         )
         return model_inputs

@@ -92,6 +92,7 @@ def answer_question(
     attention_save_loc: Optional[str] = None,
     save_attention_weights: bool = False,
     attention_file_base_name: Optional[str] = None,
+    topk_size: int = -1,
 ):
     for m in model_question_format_mapping:
         if isinstance(model, m):
@@ -115,6 +116,7 @@ def answer_question(
             save_attention_weights=save_attention_weights,
             attention_file_base_name=attention_file_base_name,
             attention_save_loc=attention_save_loc,
+            topk_size=topk_size,
         ).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 
