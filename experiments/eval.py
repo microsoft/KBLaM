@@ -380,6 +380,13 @@ gen_parser = subparsers.add_parser(
     "generation", help="Evaluate generation.", parents=[parent_parser]
 )
 gen_parser.add_argument(
+    "--eval_mode",
+    type=str,
+    choices=["kb", "icl", "zeroshot"],
+    default="kb",
+    help="Evaluation mode: knowledge base, in-context learning, or zero-shot",
+)
+gen_parser.add_argument(
     "--exp_config_name",
     type=str,
     default="generation_results",
