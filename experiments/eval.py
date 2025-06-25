@@ -658,6 +658,12 @@ def _prepare_models(
             torch_dtype="auto",
             trust_remote_code=True,
         )
+
+    if model.generation_config is None:
+        model.generation_config = transformers.GenerationConfig.from_model_config(
+            model.config
+        )
+
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     model.generation_config.eos_token_id = tokenizer.eos_token_id
     model.eval()
