@@ -377,14 +377,7 @@ subparsers = parser.add_subparsers(dest="command", required=True)
 
 # Create the parser for the generation command
 gen_parser = subparsers.add_parser(
-    "generation", parents=[parent_parser], help="Evaluate generation"
-)
-gen_parser.add_argument(
-    "--eval_mode",
-    type=str,
-    choices=["kb", "icl", "zeroshot"],
-    default="kb",
-    help="Evaluation mode: knowledge base, in-context learning, or zero-shot",
+    "generation", help="Evaluate generation.", parents=[parent_parser]
 )
 gen_parser.add_argument(
     "--exp_config_name",
@@ -416,10 +409,6 @@ gen_parser.add_argument(
     default=False,
     help='Filter out "sorry" answers from the output',
 )
-gen_parser.add_argument(
-    "--topk_size", type=int, default=-1, help="Size of top-k selection (-1 for all)"
-)
-
 
 # Create the parser for the accuracy command
 acc_parser = subparsers.add_parser(
@@ -501,9 +490,6 @@ ref_parser.add_argument(
     default=False,
     help='Filter out "sorry" answers from the output',
 )
-ref_parser.add_argument(
-    "--topk_size", type=int, default=-1, help="Size of top-k selection (-1 for all)"
-)
 
 # Create the parser for the standard command
 basic_parser = subparsers.add_parser(
@@ -548,9 +534,6 @@ basic_parser.add_argument(
 )
 basic_parser.add_argument(
     "--subset_size", default=100, type=int, help="Size of the data subset to use"
-)
-basic_parser.add_argument(
-    "--topk_size", type=int, default=-1, help="Size of top-k selection (-1 for all)"
 )
 
 
