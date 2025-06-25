@@ -17,6 +17,8 @@
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+import os
+import numpy as np
 from torch import nn
 from torch.nn import CrossEntropyLoss
 
@@ -128,6 +130,9 @@ class KBLaMBitNetAttention(nn.Module):
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -223,6 +228,11 @@ class KBLaMBitNetAttention(nn.Module):
             attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             
+            if save_attention_weights:
+                detached_weights = attn_weights_kb.detach().cpu().numpy()
+                save_path = os.path.join(attention_save_loc, f"{attention_file_base_name}_{self.layer_idx}.npy")
+                np.save(save_path, detached_weights)
+
             # The split in the original code is tricky. A single matmul after concatenating
             # the value states is equivalent and less error-prone.
             combined_value_states = torch.cat((kb_value_states, value_states), dim=2)
@@ -271,6 +281,9 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -286,6 +299,9 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             kb_kvs=kb_kvs,
             kb_config=kb_config,
             position_embeddings=position_embeddings,
+            save_attention_weights=save_attention_weights,
+            attention_save_loc=attention_save_loc,
+            attention_file_base_name=attention_file_base_name,
         )
         hidden_states = residual + hidden_states
 
@@ -364,6 +380,9 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -432,6 +451,9 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
                 kb_kvs=kb_kvs,
                 kb_config=kb_config,
                 position_embeddings=position_embeddings,
+                save_attention_weights=save_attention_weights,
+                attention_save_loc=attention_save_loc,
+                attention_file_base_name=attention_file_base_name,
             )
 
             hidden_states = layer_outputs[0]
@@ -500,6 +522,10 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         return_dict: Optional[bool] = None,
         kb_kvs: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         kb_config: Optional[KBLaMConfig] = None,
+        save_attention_weights: bool = False,
+        attention_save_loc: Optional[str] = None,
+        attention_file_base_name: Optional[str] = None,
+        tokenizer: Optional[object] = None, # Included for compatibility with the eval script
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -519,6 +545,9 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
             return_dict=return_dict,
             kb_kvs=kb_kvs,
             kb_config=kb_config,
+            save_attention_weights=save_attention_weights,
+            attention_save_loc=attention_save_loc,
+            attention_file_base_name=attention_file_base_name,
         )
 
         hidden_states = outputs[0]
@@ -561,8 +590,8 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
                 kwargs[key] = None
         
         # Handle topk_size for KB pruning during evaluation
-        kb_config = kwargs["kb_config"]
-        topk_size = kwargs.get("topk_size", -1)
+        kb_config = kwargs.get("kb_config")
+        topk_size = kwargs.pop("topk_size", -1)
         if kb_config is not None and topk_size > -1:
             kb_config.top_k_kb = topk_size
 
@@ -589,7 +618,7 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
-                "kb_kvs": kwargs["kb_kvs"],
+                "kb_kvs": kwargs.get("kb_kvs"),
                 "kb_config": kb_config,
             }
         )
