@@ -128,9 +128,25 @@ python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b
 
 To evaluate a trained model, use the `eval.py` script. You can evaluate generation quality, accuracy, and refusal.
 
-**Example for Generation Evaluation:**
+The `--model_dir` and `--encoder_dir` arguments should point to the checkpoint directories created during the training step. For example, if your training script saved a model to `output/my_bitnet_model_step_601` and an encoder to `output/my_bitnet_model_step_601_encoder`, you would use those paths.
+
+The examples below show how to evaluate for generation quality. The command structure is similar for other evaluation types like `accuracy` and `refusal`.
+
+### LLaMA-3 Example
+
+**Note:** You must provide a Hugging Face token to evaluate LLaMA models.
 ```bash
-python experiments/eval.py generation --llm_type bitnet --model_dir path/to/your/finetuned/checkpoint --encoder_dir path/to/your/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
+python experiments/eval.py generation --llm_type llama3 --model_dir path/to/your/llama3/checkpoint --encoder_dir path/to/your/llama3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --hf_token YOUR_HF_TOKEN
+```
+
+### Phi-3 Example
+```bash
+python experiments/eval.py generation --llm_type phi3 --model_dir path/to/your/phi3/checkpoint --encoder_dir path/to/your/phi3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
+```
+
+### BitNet Example
+```bash
+python experiments/eval.py generation --llm_type bitnet --model_dir path/to/your/bitnet/checkpoint --encoder_dir path/to/your/bitnet/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200
 ```
 
 ## Contributing

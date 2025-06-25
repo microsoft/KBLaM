@@ -41,6 +41,16 @@ def _prune_for_phi3(S: str) -> str:
     return S
 
 
+def _prune_for_bitnet(S: str) -> str:
+    S = S.replace("<s>", "").replace("</s>", "")
+    # The model output contains the prompt, so we remove it.
+    assistant_marker = "ASSISTANT:"
+    marker_pos = S.find(assistant_marker)
+    if marker_pos != -1:
+        return S[marker_pos + len(assistant_marker) :].strip()
+    return S
+
+
 def softmax(x: np.array, axis: int) -> np.array:
     """Compute softmax values for each sets of scores in x."""
     e_x = np.exp(x - np.max(x))
@@ -60,15 +70,19 @@ def _format_Q_phi3(Q: str):
     return "<|user|>\n" + Q + "<|end|>\n" + "<|assistant|>\n"
 
 
+def _format_Q_bitnet(Q: str):
+    return f"USER: {Q} ASSISTANT:"
+
+
 model_question_format_mapping = {
     KblamLlamaForCausalLM: _format_Q_llama,
     KBLaMPhi3ForCausalLM: _format_Q_phi3,
-    KBLaMBitNetForCausalLM: _format_Q_llama,
+    KBLaMBitNetForCausalLM: _format_Q_bitnet,
 }
 model_prune_format_mapping = {
     KblamLlamaForCausalLM: _prune_for_llama,
     KBLaMPhi3ForCausalLM: _prune_for_phi3,
-    KBLaMBitNetForCausalLM: _prune_for_llama,
+    KBLaMBitNetForCausalLM: _prune_for_bitnet,
 }
 
 
