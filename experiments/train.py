@@ -190,31 +190,36 @@ def _create_labels_for_phi3(input_ids: torch.Tensor, input_strs: List[str], toke
     return labels
 
 
-def _create_labels_for_bitnet(input_ids: torch.Tensor, input_strs: List[str], tokenizer):
+def _create_labels_for_bitnet(
+    input_ids: torch.Tensor, input_strs: List[str], tokenizer
+):
     labels = input_ids.clone()
-    pad_token_id = tokenizer.pad_token_id
+    # Tokenize the marker 'ASSISTANT: ' but without special tokens
+    assistant_marker_tokens = tokenizer(
+        "ASSISTANT: ", add_special_tokens=False
+    ).input_ids
+    assistant_marker_len = len(assistant_marker_tokens)
 
-    for i, text in enumerate(input_strs):
-        # Assuming left padding
-
-        # Find where the actual content starts
-        content_start_index = 0
-        for j in range(input_ids.shape[1]):
-            if input_ids[i, j] != pad_token_id:
-                content_start_index = j
+    for i in range(input_ids.shape[0]):
+        # Find the sequence of marker tokens in the input_ids
+        marker_start_index = -1
+        # Create a tensor from the marker tokens for comparison
+        marker_tensor = torch.tensor(
+            assistant_marker_tokens, device=input_ids.device, dtype=input_ids.dtype
+        )
+        for j in range(input_ids.shape[1] - assistant_marker_len + 1):
+            if torch.equal(input_ids[i, j : j + assistant_marker_len], marker_tensor):
+                marker_start_index = j
                 break
 
-        # Find the answer part
-        answer_marker = "ASSISTANT: "
-        answer_start_pos = text.find(answer_marker)
-
-        if answer_start_pos != -1:
-            prompt_part = text[: answer_start_pos + len(answer_marker)]
-            prompt_token_len = len(tokenizer(prompt_part, add_special_tokens=False).input_ids)
-
-            # Mask the prompt tokens
-            mask_end_index = content_start_index + prompt_token_len
+        if marker_start_index != -1:
+            # Mask everything up to and including the assistant marker
+            mask_end_index = marker_start_index + assistant_marker_len
             labels[i, :mask_end_index] = -100
+        else:
+            # If marker is not found, as a fallback, mask the whole sequence to avoid training on corrupted data
+            labels[i, :] = -100
+
     return labels
 
 
