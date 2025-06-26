@@ -787,6 +787,9 @@ class Trainer:
                                 safe_serialization=False,
                             )
 
+                            self.logger.info("Saving tokenizer...")
+                            self.tokenizer.save_pretrained(model_ckpt_name)
+
                             self.logger.info("Saving encoder...")
                             # Save encoder and config from main process
                             encoder_ckpt_name = encoder_dir / "encoder.pt"

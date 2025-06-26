@@ -625,9 +625,8 @@ def _prepare_models(
     kb_scale_factor,
 ):
     tokenizer = AutoTokenizer.from_pretrained(
-        llm_base_dir, trust_remote_code=True, padding_side="left"
+        model_path, trust_remote_code=True, padding_side="left"
     )
-    tokenizer.pad_token = "^"
 
     if llm_type == "llama3":
         if query_head_path:
