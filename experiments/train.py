@@ -313,7 +313,7 @@ def get_prefix_str(args):
     kb_token_layer_frequency = args.kb_token_layer_frequency
     lr = args.lr
 
-    prefix_string = f"stage1_lr_{lr}"
+    prefix_string = f"stage1_lr_{str(lr).replace('.', 'p')}"
     if kb_token_layer_frequency is not None:
         prefix_string += f"KBTokenLayerFreq{kb_token_layer_frequency}"
     if use_extended_qa:
