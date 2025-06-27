@@ -194,10 +194,10 @@ def _create_labels_for_bitnet(
     input_ids: torch.Tensor, input_strs: List[str], tokenizer
 ):
     labels = input_ids.clone()
-    # Tokenize the marker 'ASSISTANT: ' but without special tokens
+    # Tokenize the marker 'ASSISTANT: ' and slice to remove the special sentence start token
     assistant_marker_tokens = tokenizer(
-        "ASSISTANT: ", add_special_tokens=False
-    ).input_ids
+        "ASSISTANT: ", add_special_tokens=True
+    ).input_ids[1:]
     assistant_marker_len = len(assistant_marker_tokens)
 
     for i in range(input_ids.shape[0]):
