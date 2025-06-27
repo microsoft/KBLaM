@@ -191,33 +191,32 @@ def _create_labels_for_phi3(input_ids: torch.Tensor, input_strs: List[str], toke
 
 
 def _create_labels_for_bitnet(
-    input_ids: torch.Tensor, input_strs: List[str], tokenizer
+    input_ids: torch.Tensor, input_strs: List[str], tokenizer, offset_mapping: torch.Tensor
 ):
     labels = input_ids.clone()
-    # Tokenize the marker 'ASSISTANT: ' and slice to remove the special sentence start token
-    assistant_marker_tokens = tokenizer(
-        "ASSISTANT: ", add_special_tokens=True
-    ).input_ids[1:]
-    assistant_marker_len = len(assistant_marker_tokens)
+    for i, text in enumerate(input_strs):
+        answer_marker = "ASSISTANT: "
+        marker_pos = text.find(answer_marker)
 
-    for i in range(input_ids.shape[0]):
-        # Find the sequence of marker tokens in the input_ids
-        marker_start_index = -1
-        # Create a tensor from the marker tokens for comparison
-        marker_tensor = torch.tensor(
-            assistant_marker_tokens, device=input_ids.device, dtype=input_ids.dtype
-        )
-        for j in range(input_ids.shape[1] - assistant_marker_len + 1):
-            if torch.equal(input_ids[i, j : j + assistant_marker_len], marker_tensor):
-                marker_start_index = j
+        if marker_pos == -1:
+            labels[i, :] = -100
+            continue
+
+        prompt_end_char_pos = marker_pos + len(answer_marker)
+        
+        current_offsets = offset_mapping[i]
+        token_id = -1
+
+        # Find the token that contains the character at the end of the prompt
+        for j, (start_char, end_char) in enumerate(current_offsets):
+            if start_char < prompt_end_char_pos <= end_char:
+                token_id = j
                 break
 
-        if marker_start_index != -1:
-            # Mask everything up to and including the assistant marker
-            mask_end_index = marker_start_index + assistant_marker_len
+        if token_id != -1:
+            mask_end_index = token_id + 1
             labels[i, :mask_end_index] = -100
         else:
-            # If marker is not found, as a fallback, mask the whole sequence to avoid training on corrupted data
             labels[i, :] = -100
 
     return labels
@@ -225,7 +224,7 @@ def _create_labels_for_bitnet(
 
 def get_batch(
     qa_format_func: Callable[[str, str], str],
-    label_func: Callable[[torch.Tensor, List, Callable], torch.Tensor],
+    label_func: Callable[[torch.Tensor, List, Callable, torch.Tensor], torch.Tensor],
     dataset: List[Dict],
     tokenizer,
     device: torch.device,
@@ -282,13 +281,16 @@ def get_batch(
             else:
                 print("Q or Answer is none")
         batch_indices = real_batch_indices
-        tokenizer_output = tokenizer(input_strs, return_tensors="pt", padding=True).to(device)
-        input_ids, attention_masks = (
+        tokenizer_output = tokenizer(
+            input_strs, return_tensors="pt", padding=True, return_offsets_mapping=True
+        ).to(device)
+        input_ids, attention_masks, offset_mapping = (
             tokenizer_output["input_ids"],
             tokenizer_output["attention_mask"],
+            tokenizer_output["offset_mapping"],
         )
 
-        labels = label_func(input_ids, input_strs, tokenizer)
+        labels = label_func(input_ids, input_strs, tokenizer, offset_mapping)
     if include_outlier:
         # Generate a new set of indices, such that the KB does not contain the entity where the question comes from
         batch_indices = np.random.choice(len(dataset), B, replace=False)
