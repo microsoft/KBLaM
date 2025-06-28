@@ -29,7 +29,6 @@ from torch.optim import AdamW
 from torch.nn import CrossEntropyLoss
 from torch.nn.parallel import DistributedDataParallel
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
-import bitsandbytes as bnb
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -96,9 +95,8 @@ parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduc
 parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
 parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
 parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
-parser.add_argument("--max_seq_len",type=int,default=None)
-# fmt: on
-
+parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
+parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
 
 def create_custom_progress_bar(
     console: Console = None,  # type: ignore
@@ -613,25 +611,42 @@ class Trainer:
         )
 
     def setup_scheduler_and_optim(self):
-        llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
-        if self.sep_query_head:
-            self.logger.info("Query head being fine tuned!")
-            params_to_train = chain(self.kbretriever.encoder.parameters(), llm_q_params)
-        else:
-            self.logger.info("Fine-tuning original query head parameters.")
-            params_to_train = chain(self.kbretriever.encoder.parameters(), llm_q_params)
-
-        # Use bitsandbytes optimizer for bitnet model
-        if self.llm_type == "bitnet":
-            self.logger.info("Using bitsandbytes.optim.AdamW optimizer for BitNet.")
-            optim = bnb.optim.AdamW(params_to_train, lr=self.lr, betas=(0.9, 0.999), eps=1e-8)
-        else:
-            self.logger.info("Using torch.optim.AdamW optimizer.")
-            optim = AdamW(params_to_train, lr=self.lr)
-
+        # --- BitNet KBLaM: Freeze all backbone params, unfreeze only query head(s) ---
+        # 1. Freeze all model params
+        for name, param in self.model.named_parameters():
+            param.requires_grad = False
+        # 2. Unfreeze only the query head(s) at the correct layer frequency
+        llm_q_params = []
+        for name, param in self.model.named_parameters():
+            if "q_proj_new.weight" in name:
+                # Extract layer index from name (e.g., model.layers.0.self_attn.q_proj_new.weight)
+                import re
+                m = re.search(r"layers\.(\d+)\.self_attn\.q_proj_new\.weight", name)
+                if m:
+                    layer_idx = int(m.group(1))
+                    if layer_idx % self.kb_token_layer_frequency == 0:
+                        param.requires_grad = True
+                        llm_q_params.append(param)
+        # 3. Always train the encoder
+        encoder_params = list(self.kbretriever.encoder.parameters())
+        for p in encoder_params:
+            p.requires_grad = True
+        # 4. Log which params are trainable
+        trainable_names = [n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters()) if p.requires_grad]
+        self.logger.info(f"[BITNET] Trainable parameters: {trainable_names}")
+        # 5. Construct optimizer
+        from itertools import chain
+        params_to_train = list(chain(encoder_params, llm_q_params))
+        # Debug: print param ids and shapes
+        param_id_map = {id(p): n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters())}
+        for p in params_to_train:
+            pname = param_id_map.get(id(p), None)
+            self.logger.debug(f"[BITNET] Optimizer param: {pname}, id={id(p)}, shape={getattr(p, 'shape', None)}, dtype={getattr(p, 'dtype', None)}, device={getattr(p, 'device', None)}")
+        # Use the learning rate from the --lr argument only
+        self.logger.info("Using torch.optim.AdamW optimizer for all models (including BitNet). Only query head(s) and encoder are trainable.")
+        optim = AdamW(params_to_train, lr=self.lr)
         self.logger.info("Optimizer recreated")
-        # We will not use a scheduler for now to simplify debugging.
-        return None, optim # Return None for the scheduler
+        return None, optim # No scheduler for now
 
     def train(
         self,
@@ -642,38 +657,40 @@ class Trainer:
         use_data_aug: bool = False,
         multi_entities: bool = False,
         use_extended_qa: bool = False,
-        save_period: int = 2000,
+        save_period: int = 100,
         resumed_step: int = 0,
         kb_config: KBLaMConfig = None,
     ):
         train_losses = []
         start_step = resumed_step
-
         loss_fct = CrossEntropyLoss(reduction="none")
 
-        # Calculate accumulation steps per GPU
+        # Use Accelerator for all model types, including BitNet
         num_processes = self.accelerator.num_processes
         accum_steps_per_gpu = max(1, grad_accum_steps // num_processes)
         effective_batch_size = batch_size * grad_accum_steps
-
         if self.accelerator.is_main_process:
+            self.logger.info("================= KBLaM Training Start =================")
+            self.logger.info(f"Model type: {self.llm_type}")
             self.logger.info(f"Training with {num_processes} GPUs")
+            self.logger.info(f"Total steps: {self.num_steps}")
             self.logger.info(f"Total accumulation steps: {grad_accum_steps}, Steps per GPU: {accum_steps_per_gpu}")
             self.logger.info(f"Batch size: {batch_size}")
             self.logger.info(f"Effective batch size: {effective_batch_size}")
-
+            self.logger.info(f"Learning rate: {self.lr}")
+            self.logger.info(f"Max sequence length: {self.max_seq_len}")
+            self.logger.info(f"Trainable parameters: {[n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters()) if p.requires_grad]}")
         with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
             task = pbar.add_task("Training", total=self.num_steps, loss=100)
             for step in range(start_step, self.num_steps, 1):
                 self.optim.zero_grad()
                 losses = []
-
-                # Calculate which accumulation steps this GPU should process
                 process_rank = self.accelerator.process_index
                 start_accum_step = process_rank * accum_steps_per_gpu
                 end_accum_step = min(start_accum_step + accum_steps_per_gpu, grad_accum_steps)
-
-                # Accumulate gradients
+                # High-level step log
+                if self.accelerator.is_main_process:
+                    self.logger.info(f"================= Step {step} =================")
                 for a_step in range(start_accum_step, end_accum_step):
                     step_config = get_step_config(
                         a_step,
@@ -691,17 +708,34 @@ class Trainer:
                         random_sample=True,
                         **step_config,
                     )
-
-                    if a_step == 0 and step % 10 == 0:
-                        self.logger.info(f"INPUT IDs SHAPE: {input_ids.shape}")
-
+                    if a_step == 0:
+                        # Log input/label shapes and label mask summary
+                        if self.accelerator.is_main_process:
+                            self.logger.info(f"Batch input_ids shape: {input_ids.shape}, labels shape: {labels.shape}")
+                            num_masked = (labels == -100).sum().item()
+                            num_total = labels.numel()
+                            num_unmasked = num_total - num_masked
+                            self.logger.info(f"Label mask: masked={num_masked}, unmasked={num_unmasked}, pct_masked={num_masked/num_total:.2%}")
+                            if num_unmasked == 0:
+                                self.logger.warning("All labels are masked (-100)! Model will not learn.")
+                            elif num_unmasked < 5:
+                                self.logger.warning(f"Very few unmasked labels: {num_unmasked}")
+                        # Log pre-step param values (first 5 elements)
+                        for name, param in self.model.named_parameters():
+                            if param.requires_grad and "q_proj" in name:
+                                vals = param.view(-1)[:5].detach().cpu()
+                                if vals.dtype == torch.bfloat16:
+                                    vals = vals.to(torch.float32)
+                                vals = vals.numpy()
+                                self.logger.debug(f"Param pre-step {name}: first5={vals}")
+                                self.logger.debug(f"Param device: {param.device}, dtype: {param.dtype}")
+                                break
                     if self.max_seq_len is not None:
                         input_ids = input_ids[:, : self.max_seq_len]
                         attention_masks = attention_masks[:, : self.max_seq_len]
                         labels = labels[:, : self.max_seq_len]
-                        if a_step == 0 and step % 10 == 0:
+                        if a_step == 0 and self.accelerator.is_main_process:
                             self.logger.info(f"TRUNCATED INPUT IDs SHAPE: {input_ids.shape}")
-
                     kb_embedding = self.kbretriever.get_key_embeddings(
                         batch_indices, len(input_ids), step, self.kb_size
                     )
@@ -713,41 +747,21 @@ class Trainer:
                         kb_config=kb_config,
                     )
                     logits = out["logits"]
-
-                    # display ground truth and model prediction to quickly check model
-                    if a_step == 0:
-                        if self.accelerator.is_main_process:
-                            with torch.no_grad():  # <--- CRITICAL FIX
-                                batch_index = 0  # Which example in the batch to select
-                                max_logits = logits.argmax(axis=2)
-                                decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
-                                sel_labels = labels[batch_index, :]
-                                sel_labels_unmasked = sel_labels[sel_labels != -100]
-                                decoded_gt = self.tokenizer.decode(sel_labels_unmasked)
-                                self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
-                                self.logger.info(f"GT: {decoded_gt}")
-                                self.logger.info(f"PRED: {decoded_pred}")
-                                wandb.log({"kbsize": kb_embedding[0].shape[1]})
-
-                            # Extensive debugging logs, enabled with --verbose
-                            if self.logger.isEnabledFor(logging.DEBUG):
-                                self.logger.debug("vvvvvvvvvvvvvv DEBUG START vvvvvvvvvvvvvv")
-                                self.logger.debug(f"Current LR: {self.optim.param_groups[0]['lr']:.2e}")
-                                full_input_decoded = self.tokenizer.decode(input_ids[batch_index])
-                                self.logger.debug(f"Full Decoded Input:\n{full_input_decoded}")
-                                self.logger.debug(f"Full Labels Tensor:\n{sel_labels.cpu().numpy().tolist()}")
-                                self.logger.debug(f"Number of non-masked labels: {len(sel_labels_unmasked)}")
-                                # Log a sample parameter before optimizer step
-                                for name, param in self.model.named_parameters():
-                                    if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
-                                        self.logger.debug(f"Param pre-step (L0 q_proj): {param.abs().mean().item():.6f}")
-                                        break
-                                self.logger.debug("^^^^^^^^^^^^^^ DEBUG END ^^^^^^^^^^^^^^")
-
+                    if a_step == 0 and self.accelerator.is_main_process:
+                        with torch.no_grad():
+                            batch_index = 0
+                            max_logits = logits.argmax(axis=2)
+                            decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
+                            sel_labels = labels[batch_index, :]
+                            sel_labels_unmasked = sel_labels[sel_labels != -100]
+                            decoded_gt = self.tokenizer.decode(sel_labels_unmasked)
+                            self.logger.info(f"KB embedding shape: {kb_embedding[0].shape}")
+                            self.logger.info(f"Sample GT: {decoded_gt}")
+                            self.logger.info(f"Sample PRED: {decoded_pred}")
+                            wandb.log({"kbsize": kb_embedding[0].shape[1]})
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
                     weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
-                    # Flatten the tokens
                     model_config = (
                         self.model.config
                         if not isinstance(self.model, DistributedDataParallel)
@@ -756,94 +770,65 @@ class Trainer:
                     shift_logits = shift_logits.view(-1, model_config.vocab_size)
                     shift_labels = shift_labels.view(-1)
                     weights = weights.view(-1)
-
                     shift_labels = shift_labels.to(shift_logits.device)
-
                     raw_loss = loss_fct(shift_logits, shift_labels)
                     weighted_loss = raw_loss * weights.max() / weights
-                    loss = weighted_loss.mean()  # Make sure each sample is equally weighted
-
+                    loss = weighted_loss.mean()
                     self.accelerator.backward(loss)
-
-                    # More extensive debugging for gradient flow
-                    if a_step == 0 and self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug("vvvvvvvvvvvvvv GRADIENT CHECK vvvvvvvvvvvvvv")
-                        self.logger.debug(f"Raw Loss (mean): {raw_loss.mean().item():.4f}, Final Loss: {loss.item():.4f}")
-                        # Check gradient on a KBEncoder parameter
-                        encoder_param = self.kbretriever.encoder.projector_k.weight
-                        if encoder_param.grad is not None:
-                            self.logger.debug(f"KBEncoder grad norm: {torch.linalg.norm(encoder_param.grad).item():.6f}")
-                        else:
-                            self.logger.debug("KBEncoder grad is None")
-                        # Check gradient on a model query head parameter
+                    # Log gradient norm for key param
+                    if a_step == 0:
                         for name, param in self.model.named_parameters():
-                            if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                            if param.requires_grad and "q_proj" in name:
                                 if param.grad is not None:
-                                    self.logger.debug(f"Model L0 q_proj grad norm: {torch.linalg.norm(param.grad).item():.6f}")
+                                    grad_norm = float(torch.linalg.norm(param.grad).item())
+                                    self.logger.debug(f"Grad {name}: norm={grad_norm:.6f}")
                                 else:
-                                    self.logger.debug("Model L0 q_proj grad is None")
+                                    self.logger.debug(f"Grad {name}: None")
                                 break
-                        self.logger.debug("^^^^^^^^^^^^^^ GRADIENT CHECK END ^^^^^^^^^^^^^^")
-
+                        encoder_param = getattr(self.kbretriever.encoder, "projector_k", None)
+                        if encoder_param is not None and hasattr(encoder_param, "weight") and encoder_param.weight.grad is not None:
+                            self.logger.debug(f"KBEncoder grad norm: {torch.linalg.norm(encoder_param.weight.grad).item():.6f}")
                     losses.append(loss.item())
-
+                # Log post-step param values (first 5 elements)
+                for name, param in self.model.named_parameters():
+                    if param.requires_grad and "q_proj" in name:
+                        vals = param.view(-1)[:5].detach().cpu()
+                        if vals.dtype == torch.bfloat16:
+                            vals = vals.to(torch.float32)
+                        vals = vals.numpy()
+                        self.logger.debug(f"Param post-step {name}: first5={vals}")
+                        self.logger.debug(f"Param device: {param.device}, dtype: {param.dtype}")
+                        break
                 self.optim.step()
-                # Only step the scheduler if it exists and lr_decay is enabled
                 if self.use_lr_decay and self.scheduler is not None:
                     self.scheduler.step()
-
-                # Log parameter value after optimizer step for comparison
-                if self.accelerator.is_main_process and self.logger.isEnabledFor(logging.DEBUG):
-                    for name, param in self.model.named_parameters():
-                        if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
-                            self.logger.debug(f"Param post-step (L0 q_proj): {param.abs().mean().item():.6f}")
-                            break
-
-                # Gather and average losses from all GPUs for reporting
-                if losses:  # Only if this GPU processed any batches
+                if losses:
                     local_loss = torch.tensor(np.mean(losses), device=self.device)
                 else:
                     local_loss = torch.tensor(0.0, device=self.device)
-
-                # Gather losses from all processes
                 all_losses = self.accelerator.gather(local_loss)
-                valid_losses = all_losses[all_losses > 0]  # Filter out zeros from GPUs that didn't process batches
+                valid_losses = all_losses[all_losses > 0]
                 avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
-
-                # Only log from main process
                 if self.accelerator.is_main_process:
                     self.logger.info(f"step: {step}, loss: {avg_loss}")
                     wandb.log({'train_loss': np.mean(losses)})
                     train_losses.append(avg_loss)
                     pbar.update(task, advance=1, loss=avg_loss)
-
                 if (step % save_period) == 0 and (step != start_step):
                     try:
-                        # Log memory usage before synchronization
                         self.logger.info(
                             f"Is main process: {self.accelerator.is_main_process}, GPU memory before save: {torch.cuda.memory_allocated()/1e9:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1e9:.2f}GB"
                         )
-
-                        # Try to free up memory
                         torch.cuda.empty_cache()
-
-                        # Synchronize before saving
                         self.accelerator.wait_for_everyone()
-
                         if self.accelerator.is_main_process:
-
                             self.logger.info("Saving checkpoint...")
                             self.logger.info("Making dirs...")
-                            # Save model - using proper directory creation
                             model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
                             model_ckpt_name.mkdir(parents=True, exist_ok=True)
-
-                            # Also create encoder directory
                             encoder_dir = self.output_path / f"{self.llm_savename}_step_{step}_encoder"
                             encoder_dir.mkdir(parents=True, exist_ok=True)
-
                             self.logger.info("Saving model...")
-                            # Unwrap and save model
                             unwrapped_model = self.accelerator.unwrap_model(self.model)
                             unwrapped_model.save_pretrained(
                                 model_ckpt_name,
@@ -851,25 +836,186 @@ class Trainer:
                                 save_function=self.accelerator.save,
                                 safe_serialization=False,
                             )
-
                             self.logger.info("Saving tokenizer...")
                             self.tokenizer.save_pretrained(model_ckpt_name)
-
                             self.logger.info("Saving encoder...")
-                            # Save encoder and config from main process
                             encoder_ckpt_name = encoder_dir / "encoder.pt"
                             torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
-
                             self.logger.info("Saving config...")
-                            # Explicitly save config as JSON
                             config_path = model_ckpt_name / "kb_config_explicit.json"
                             with open(config_path, 'w') as f:
                                 f.write(kb_config.to_json_string())
-
                     except Exception as e:
                         self.logger.error(f"Error saving checkpoint: {e}")
                         self.logger.error(f"Error details: {str(e)}")
                         raise e
+        if self.accelerator.is_main_process:
+            self.logger.info("================= KBLaM Training Complete =================")
+            num_processes = self.accelerator.num_processes
+            accum_steps_per_gpu = max(1, grad_accum_steps // num_processes)
+            effective_batch_size = batch_size * grad_accum_steps
+            if self.accelerator.is_main_process:
+                self.logger.info(f"Training with {num_processes} GPUs")
+                self.logger.info(f"Total accumulation steps: {grad_accum_steps}, Steps per GPU: {accum_steps_per_gpu}")
+                self.logger.info(f"Batch size: {batch_size}")
+                self.logger.info(f"Effective batch size: {effective_batch_size}")
+            with create_custom_progress_bar(console=console, disable=not self.accelerator.is_main_process) as pbar:
+                task = pbar.add_task("Training", total=self.num_steps, loss=100)
+                for step in range(start_step, self.num_steps, 1):
+                    self.optim.zero_grad()
+                    losses = []
+                    process_rank = self.accelerator.process_index
+                    start_accum_step = process_rank * accum_steps_per_gpu
+                    end_accum_step = min(start_accum_step + accum_steps_per_gpu, grad_accum_steps)
+                    for a_step in range(start_accum_step, end_accum_step):
+                        step_config = get_step_config(
+                            a_step,
+                            grad_accum_steps,
+                            use_data_aug,
+                            outlier_num,
+                            multi_entities,
+                            use_extended_qa,
+                        )
+                        input_ids, attention_masks, labels, batch_indices = self._get_batch(
+                            training_set,
+                            self.tokenizer,
+                            self.device,
+                            B=batch_size,
+                            random_sample=True,
+                            **step_config,
+                        )
+                        if a_step == 0 and step % 10 == 0:
+                            self.logger.info(f"INPUT IDs SHAPE: {input_ids.shape}")
+                        if self.max_seq_len is not None:
+                            input_ids = input_ids[:, : self.max_seq_len]
+                            attention_masks = attention_masks[:, : self.max_seq_len]
+                            labels = labels[:, : self.max_seq_len]
+                            if a_step == 0 and step % 10 == 0:
+                                self.logger.info(f"TRUNCATED INPUT IDs SHAPE: {input_ids.shape}")
+                        kb_embedding = self.kbretriever.get_key_embeddings(
+                            batch_indices, len(input_ids), step, self.kb_size
+                        )
+                        out = self.model(
+                            input_ids=input_ids,
+                            attention_mask=attention_masks,
+                            kb_kvs=kb_embedding,
+                            output_attentions=True,
+                            kb_config=kb_config,
+                        )
+                        logits = out["logits"]
+                        if a_step == 0:
+                            if self.accelerator.is_main_process:
+                                with torch.no_grad():
+                                    batch_index = 0
+                                    max_logits = logits.argmax(axis=2)
+                                    decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
+                                    sel_labels = labels[batch_index, :]
+                                    sel_labels_unmasked = sel_labels[sel_labels != -100]
+                                    decoded_gt = self.tokenizer.decode(sel_labels_unmasked)
+                                    self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
+                                    self.logger.info(f"GT: {decoded_gt}")
+                                    self.logger.info(f"PRED: {decoded_pred}")
+                                    wandb.log({"kbsize": kb_embedding[0].shape[1]})
+                                if self.logger.isEnabledFor(logging.DEBUG):
+                                    self.logger.debug("vvvvvvvvvvvvvv DEBUG START vvvvvvvvvvvvvv")
+                                    self.logger.debug(f"Current LR: {self.optim.param_groups[0]['lr']:.2e}")
+                                    full_input_decoded = self.tokenizer.decode(input_ids[batch_index])
+                                    self.logger.debug(f"Full Decoded Input:\n{full_input_decoded}")
+                                    self.logger.debug(f"Full Labels Tensor:\n{sel_labels.cpu().numpy().tolist()}")
+                                    self.logger.debug(f"Number of non-masked labels: {len(sel_labels_unmasked)}")
+                                    for name, param in self.model.named_parameters():
+                                        if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                                            self.logger.debug(f"Param pre-step (L0 q_proj): {param.abs().mean().item():.6f}")
+                                            break
+                                    self.logger.debug("^^^^^^^^^^^^^^ DEBUG END ^^^^^^^^^^^^^^")
+                        shift_logits = logits[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous()
+                        weights = (shift_labels > 0).sum(-1, keepdim=True).expand(-1, shift_labels.shape[1]).contiguous()
+                        model_config = (
+                            self.model.config
+                            if not isinstance(self.model, DistributedDataParallel)
+                            else self.model.module.config
+                        )
+                        shift_logits = shift_logits.view(-1, model_config.vocab_size)
+                        shift_labels = shift_labels.view(-1)
+                        weights = weights.view(-1)
+                        shift_labels = shift_labels.to(shift_logits.device)
+                        raw_loss = loss_fct(shift_logits, shift_labels)
+                        weighted_loss = raw_loss * weights.max() / weights
+                        loss = weighted_loss.mean()
+                        self.accelerator.backward(loss)
+                        if a_step == 0 and self.logger.isEnabledFor(logging.DEBUG):
+                            self.logger.debug("vvvvvvvvvvvvvv GRADIENT CHECK vvvvvvvvvvvvvv")
+                            self.logger.debug(f"Raw Loss (mean): {raw_loss.mean().item():.4f}, Final Loss: {loss.item():.4f}")
+                            encoder_param = self.kbretriever.encoder.projector_k.weight
+                            if encoder_param.grad is not None:
+                                self.logger.debug(f"KBEncoder grad norm: {torch.linalg.norm(encoder_param.grad).item():.6f}")
+                            else:
+                                self.logger.debug("KBEncoder grad is None")
+                            for name, param in self.model.named_parameters():
+                                if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                                    if param.grad is not None:
+                                        self.logger.debug(f"Model L0 q_proj grad norm: {torch.linalg.norm(param.grad).item():.6f}")
+                                    else:
+                                        self.logger.debug("Model L0 q_proj grad is None")
+                                    break
+                            self.logger.debug("^^^^^^^^^^^^^^ GRADIENT CHECK END ^^^^^^^^^^^^^^")
+                        losses.append(loss.item())
+                    self.optim.step()
+                    if self.use_lr_decay and self.scheduler is not None:
+                        self.scheduler.step()
+                    if self.accelerator.is_main_process and self.logger.isEnabledFor(logging.DEBUG):
+                        for name, param in self.model.named_parameters():
+                            if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                                self.logger.debug(f"Param post-step (L0 q_proj): {param.abs().mean().item():.6f}")
+                                break
+                    if losses:
+                        local_loss = torch.tensor(np.mean(losses), device=self.device)
+                    else:
+                        local_loss = torch.tensor(0.0, device=self.device)
+                    all_losses = self.accelerator.gather(local_loss)
+                    valid_losses = all_losses[all_losses > 0]
+                    avg_loss = valid_losses.mean().item() if len(valid_losses) > 0 else 0.0
+                    if self.accelerator.is_main_process:
+                        self.logger.info(f"step: {step}, loss: {avg_loss}")
+                        wandb.log({'train_loss': np.mean(losses)})
+                        train_losses.append(avg_loss)
+                        pbar.update(task, advance=1, loss=avg_loss)
+                    if (step % save_period) == 0 and (step != start_step):
+                        try:
+                            self.logger.info(
+                                f"Is main process: {self.accelerator.is_main_process}, GPU memory before save: {torch.cuda.memory_allocated()/1e9:.2f}GB / {torch.cuda.get_device_properties(0).total_memory/1e9:.2f}GB"
+                            )
+                            torch.cuda.empty_cache()
+                            self.accelerator.wait_for_everyone()
+                            if self.accelerator.is_main_process:
+                                self.logger.info("Saving checkpoint...")
+                                self.logger.info("Making dirs...")
+                                model_ckpt_name = self.output_path / f"{self.llm_savename}_step_{step}"
+                                model_ckpt_name.mkdir(parents=True, exist_ok=True)
+                                encoder_dir = self.output_path / f"{self.llm_savename}_step_{step}_encoder"
+                                encoder_dir.mkdir(parents=True, exist_ok=True)
+                                self.logger.info("Saving model...")
+                                unwrapped_model = self.accelerator.unwrap_model(self.model)
+                                unwrapped_model.save_pretrained(
+                                    model_ckpt_name,
+                                    is_main_process=self.accelerator.is_main_process,
+                                    save_function=self.accelerator.save,
+                                    safe_serialization=False,
+                                )
+                                self.logger.info("Saving tokenizer...")
+                                self.tokenizer.save_pretrained(model_ckpt_name)
+                                self.logger.info("Saving encoder...")
+                                encoder_ckpt_name = encoder_dir / "encoder.pt"
+                                torch.save(self.kbretriever.encoder.state_dict(), encoder_ckpt_name)
+                                self.logger.info("Saving config...")
+                                config_path = model_ckpt_name / "kb_config_explicit.json"
+                                with open(config_path, 'w') as f:
+                                    f.write(kb_config.to_json_string())
+                        except Exception as e:
+                            self.logger.error(f"Error saving checkpoint: {e}")
+                            self.logger.error(f"Error details: {str(e)}")
+                            raise e
 
 
 def main():
@@ -1102,7 +1248,7 @@ def main():
         use_data_aug=use_data_aug,
         multi_entities=multi_entities,
         use_extended_qa=use_extended_qa,
-        save_period=100,
+        save_period=args.save_period,
         resumed_step=resumed_step,
         kb_config=kb_config,
     )

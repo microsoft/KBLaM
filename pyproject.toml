@@ -30,7 +30,6 @@ dependencies = [
     "nltk",
     "rouge-score",
     "bert_score",
-    "bitsandbytes>=0.46.0"
 ]
 
 [dependency-groups]
