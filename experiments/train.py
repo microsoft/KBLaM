@@ -25,9 +25,11 @@ from rich.progress import (
 )
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn, TimeRemainingColumn
 from rich.theme import Theme
+from torch.optim import AdamW
 from torch.nn import CrossEntropyLoss
 from torch.nn.parallel import DistributedDataParallel
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+import bitsandbytes as bnb
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -202,21 +204,25 @@ def _create_labels_for_bitnet(
             labels[i, :] = -100
             continue
 
-        prompt_end_char_pos = marker_pos + len(answer_marker)
-        
-        current_offsets = offset_mapping[i]
-        token_id = -1
+        # The answer starts right after the marker
+        answer_start_char_pos = marker_pos + len(answer_marker)
 
-        # Find the token that contains the character at the end of the prompt
+        current_offsets = offset_mapping[i]
+        mask_end_token_idx = -1
+
+        # Find the first token that is part of the answer
         for j, (start_char, end_char) in enumerate(current_offsets):
-            if start_char < prompt_end_char_pos <= end_char:
-                token_id = j
+            # Find the token where the answer begins.
+            # We look for the first token whose character span includes the start of the answer.
+            if start_char <= answer_start_char_pos < end_char:
+                mask_end_token_idx = j
                 break
 
-        if token_id != -1:
-            mask_end_index = token_id + 1
-            labels[i, :mask_end_index] = -100
+        if mask_end_token_idx != -1:
+            # Mask all tokens up to (but not including) the first token of the answer
+            labels[i, :mask_end_token_idx] = -100
         else:
+            # If we couldn't find the start of the answer, mask the whole sequence
             labels[i, :] = -100
 
     return labels
@@ -564,6 +570,7 @@ class Trainer:
         kb_size: int | List[int],
         llm_savename: str,
         output_dir: str,
+        llm_type: str,
         sep_query_head: bool = False,
         max_seq_len: int | None = None,
     ):
@@ -575,9 +582,10 @@ class Trainer:
         self.num_steps = num_steps
         self.lr = lr
         self.max_seq_len = max_seq_len
+        self.llm_type = llm_type
 
         self.model = llm_model
-        self.model.gradient_checkpointing_enable()
+        # self.model.gradient_checkpointing_enable()
 
         self.device = device if device is not None else self.accelerator.device
         self.kbretriever = kbretriever
@@ -605,21 +613,25 @@ class Trainer:
         )
 
     def setup_scheduler_and_optim(self):
+        llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
         if self.sep_query_head:
             self.logger.info("Query head being fine tuned!")
-            llm_q_params = self._get_params(self.model, self.sep_query_head, self.kb_token_layer_frequency)
-            scheduler, optim = setup_scheduler_and_optimizer(
-                chain(self.kbretriever.encoder.parameters(), llm_q_params),
-                self.lr,
-                self.num_steps,
-            )
-            self.logger.info("Optimizer recreated")
+            params_to_train = chain(self.kbretriever.encoder.parameters(), llm_q_params)
         else:
-            scheduler, optim = setup_scheduler_and_optimizer(
-                self.kbretriever.encoder.parameters(), self.lr, self.num_steps
-            )
-            self.logger.info("Optimizer recreated")
-        return scheduler, optim
+            self.logger.info("Fine-tuning original query head parameters.")
+            params_to_train = chain(self.kbretriever.encoder.parameters(), llm_q_params)
+
+        # Use bitsandbytes optimizer for bitnet model
+        if self.llm_type == "bitnet":
+            self.logger.info("Using bitsandbytes.optim.AdamW optimizer for BitNet.")
+            optim = bnb.optim.AdamW(params_to_train, lr=self.lr, betas=(0.9, 0.999), eps=1e-8)
+        else:
+            self.logger.info("Using torch.optim.AdamW optimizer.")
+            optim = AdamW(params_to_train, lr=self.lr)
+
+        self.logger.info("Optimizer recreated")
+        # We will not use a scheduler for now to simplify debugging.
+        return None, optim # Return None for the scheduler
 
     def train(
         self,
@@ -703,17 +715,34 @@ class Trainer:
                     logits = out["logits"]
 
                     # display ground truth and model prediction to quickly check model
-                    if a_step == 0 and step % 10 == 0:
-                        batch_index = 0  # Which example in the batch to select
-                        max_logits = logits.argmax(axis=2)
-                        decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
-                        sel_labels = labels[batch_index, :]
-                        sel_labels = sel_labels[sel_labels >= 0]  # Remove padding token -100
-                        decoded_gt = self.tokenizer.decode(sel_labels)
-                        self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
-                        self.logger.info(f"GT: {decoded_gt}")
-                        self.logger.info(f"PRED: {decoded_pred}")
-                        wandb.log({"kbsize": kb_embedding[0].shape[1]})
+                    if a_step == 0:
+                        if self.accelerator.is_main_process:
+                            with torch.no_grad():  # <--- CRITICAL FIX
+                                batch_index = 0  # Which example in the batch to select
+                                max_logits = logits.argmax(axis=2)
+                                decoded_pred = self.tokenizer.decode(max_logits[batch_index, :-1])
+                                sel_labels = labels[batch_index, :]
+                                sel_labels_unmasked = sel_labels[sel_labels != -100]
+                                decoded_gt = self.tokenizer.decode(sel_labels_unmasked)
+                                self.logger.info(f"KB SHAPE: {kb_embedding[0].shape}")
+                                self.logger.info(f"GT: {decoded_gt}")
+                                self.logger.info(f"PRED: {decoded_pred}")
+                                wandb.log({"kbsize": kb_embedding[0].shape[1]})
+
+                            # Extensive debugging logs, enabled with --verbose
+                            if self.logger.isEnabledFor(logging.DEBUG):
+                                self.logger.debug("vvvvvvvvvvvvvv DEBUG START vvvvvvvvvvvvvv")
+                                self.logger.debug(f"Current LR: {self.optim.param_groups[0]['lr']:.2e}")
+                                full_input_decoded = self.tokenizer.decode(input_ids[batch_index])
+                                self.logger.debug(f"Full Decoded Input:\n{full_input_decoded}")
+                                self.logger.debug(f"Full Labels Tensor:\n{sel_labels.cpu().numpy().tolist()}")
+                                self.logger.debug(f"Number of non-masked labels: {len(sel_labels_unmasked)}")
+                                # Log a sample parameter before optimizer step
+                                for name, param in self.model.named_parameters():
+                                    if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                                        self.logger.debug(f"Param pre-step (L0 q_proj): {param.abs().mean().item():.6f}")
+                                        break
+                                self.logger.debug("^^^^^^^^^^^^^^ DEBUG END ^^^^^^^^^^^^^^")
 
                     shift_logits = logits[..., :-1, :].contiguous()
                     shift_labels = labels[..., 1:].contiguous()
@@ -730,16 +759,45 @@ class Trainer:
 
                     shift_labels = shift_labels.to(shift_logits.device)
 
-                    loss = (
-                        loss_fct(shift_logits, shift_labels) * weights.max() / weights
-                    ).mean()  # Make sure each sample is equally weighted
+                    raw_loss = loss_fct(shift_logits, shift_labels)
+                    weighted_loss = raw_loss * weights.max() / weights
+                    loss = weighted_loss.mean()  # Make sure each sample is equally weighted
 
                     self.accelerator.backward(loss)
+
+                    # More extensive debugging for gradient flow
+                    if a_step == 0 and self.logger.isEnabledFor(logging.DEBUG):
+                        self.logger.debug("vvvvvvvvvvvvvv GRADIENT CHECK vvvvvvvvvvvvvv")
+                        self.logger.debug(f"Raw Loss (mean): {raw_loss.mean().item():.4f}, Final Loss: {loss.item():.4f}")
+                        # Check gradient on a KBEncoder parameter
+                        encoder_param = self.kbretriever.encoder.projector_k.weight
+                        if encoder_param.grad is not None:
+                            self.logger.debug(f"KBEncoder grad norm: {torch.linalg.norm(encoder_param.grad).item():.6f}")
+                        else:
+                            self.logger.debug("KBEncoder grad is None")
+                        # Check gradient on a model query head parameter
+                        for name, param in self.model.named_parameters():
+                            if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                                if param.grad is not None:
+                                    self.logger.debug(f"Model L0 q_proj grad norm: {torch.linalg.norm(param.grad).item():.6f}")
+                                else:
+                                    self.logger.debug("Model L0 q_proj grad is None")
+                                break
+                        self.logger.debug("^^^^^^^^^^^^^^ GRADIENT CHECK END ^^^^^^^^^^^^^^")
+
                     losses.append(loss.item())
 
                 self.optim.step()
-                if self.use_lr_decay:
+                # Only step the scheduler if it exists and lr_decay is enabled
+                if self.use_lr_decay and self.scheduler is not None:
                     self.scheduler.step()
+
+                # Log parameter value after optimizer step for comparison
+                if self.accelerator.is_main_process and self.logger.isEnabledFor(logging.DEBUG):
+                    for name, param in self.model.named_parameters():
+                        if "layers.0.self_attn.q_proj.weight" in name and param.requires_grad:
+                            self.logger.debug(f"Param post-step (L0 q_proj): {param.abs().mean().item():.6f}")
+                            break
 
                 # Gather and average losses from all GPUs for reporting
                 if losses:  # Only if this GPU processed any batches
@@ -823,9 +881,9 @@ def main():
         device = torch.device("cuda")
 
     if args.verbose:
-        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
     else:
-        logger.setLevel(logging.INFO)
+        logging.getLogger().setLevel(logging.INFO)
 
     print(vars(args))
     dataset_name = args.train_dataset
@@ -1029,6 +1087,7 @@ def main():
         kb_size,  # type: ignore
         llm_ckpt_name,
         model_save_dir,
+        llm_type=llm_type,
         sep_query_head=sep_query_head,
         max_seq_len=max_seq_len,
     )

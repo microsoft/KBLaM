@@ -285,6 +285,9 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        if kb_config is not None and self.self_attn.layer_idx is not None and self.self_attn.layer_idx % kb_config.kb_layer_frequency == 0:
+            logger.debug(f"KB-ATTN: DecoderLayer {self.self_attn.layer_idx} received kb_config.")
+
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
 
@@ -441,20 +444,37 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
 
             past_key_value = past_key_values[idx] if past_key_values else None
 
-            layer_outputs = decoder_layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                kb_kvs=kb_kvs,
-                kb_config=kb_config,
-                position_embeddings=position_embeddings,
-                save_attention_weights=save_attention_weights,
-                attention_save_loc=attention_save_loc,
-                attention_file_base_name=attention_file_base_name,
-            )
+            if self.gradient_checkpointing and self.training:
+                layer_outputs = self._gradient_checkpointing_func(
+                    decoder_layer.__call__,
+                    hidden_states,
+                    attention_mask,
+                    position_ids,
+                    past_key_value,
+                    output_attentions,
+                    use_cache,
+                    kb_kvs,
+                    kb_config,
+                    position_embeddings,
+                    save_attention_weights,
+                    attention_save_loc,
+                    attention_file_base_name,
+                )
+            else:
+                layer_outputs = decoder_layer(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_value=past_key_value,
+                    output_attentions=output_attentions,
+                    use_cache=use_cache,
+                    kb_kvs=kb_kvs,
+                    kb_config=kb_config,
+                    position_embeddings=position_embeddings,
+                    save_attention_weights=save_attention_weights,
+                    attention_save_loc=attention_save_loc,
+                    attention_file_base_name=attention_file_base_name,
+                )
 
             hidden_states = layer_outputs[0]
 
@@ -533,6 +553,10 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if kb_config is not None:
+            logger.debug("KB-ATTN: CausalLM received kb_config.")
+
+        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
