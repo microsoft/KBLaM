@@ -1197,8 +1197,13 @@ def main():
     )
 
     if model_dir_to_resume:
-        encoder.load_state_dict(torch.load(os.path.join(model_dir_to_resume, "encoder.pt")))
-        kb_config = KBLaMConfig.from_pretrained(os.path.join(model_dir_to_resume, "kb_config.json"))
+        encoder_dir = model_dir_to_resume + "_encoder"
+        encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
+        if args.llm_type == "bitnet":
+            config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
+        else:
+            config_path = os.path.join(model_dir_to_resume, "kb_config.json")
+        kb_config = KBLaMConfig.from_pretrained(config_path)
     else:
         kb_config = KBLaMConfig(
             sep_query_head=sep_query_head,
