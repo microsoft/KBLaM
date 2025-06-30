@@ -510,6 +510,9 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         self.mlp = KBLaMBitNetMLP(config)
         self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # Dropout for residual connections (after attn, after MLP)
+        resid_pdrop = getattr(config, "resid_pdrop", 0.0)
+        self.resid_dropout = nn.Dropout(resid_pdrop) if resid_pdrop > 0 else nn.Identity()
 
     def forward(
         self,
@@ -552,13 +555,13 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             attention_save_loc=attention_save_loc,
             attention_file_base_name=attention_file_base_name,
         )
-        hidden_states = residual + hidden_states
+        hidden_states = residual + self.resid_dropout(hidden_states)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
+        hidden_states = residual + self.resid_dropout(hidden_states)
 
         outputs = (hidden_states,)
 
@@ -590,6 +593,9 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        # Dropout for embeddings
+        embd_pdrop = getattr(config, "embd_pdrop", 0.0)
+        self.embd_dropout = nn.Dropout(embd_pdrop) if embd_pdrop > 0 else nn.Identity()
         self.layers = nn.ModuleList(
             [KBLaMBitNetDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
@@ -698,6 +704,9 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
+
+        # Apply embedding dropout
+        inputs_embeds = self.embd_dropout(inputs_embeds)
 
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
