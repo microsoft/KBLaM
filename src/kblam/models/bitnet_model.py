@@ -27,6 +27,8 @@ from typing import Optional, Tuple, List, Union
 from transformers.utils import logging
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.models.bitnet import configuration_bitnet, modeling_bitnet
+from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
+from transformers.modeling_outputs import SequenceClassifierOutput, TokenClassifierOutput
 from transformers.generation.utils import GenerationMixin
 
 # These imports depend on the custom transformers fork specified in plan.md
@@ -36,8 +38,189 @@ from kblam.models.kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 
+# --- Sequence Classification Head ---
+class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel):
+    """
+    Sequence classification head for BitNet, adapted for KBLaM.
+
+    This class enables BitNet to be fine-tuned and evaluated on tasks where a single label
+    is assigned to an entire input sequence (e.g., sentiment analysis, topic classification).
+    It pools the last non-padding token's hidden state and applies a linear classifier.
+    """
+    def __init__(self, config):
+        """
+        Initialize the sequence classification head.
+        Args:
+            config: Model configuration with num_labels and other settings.
+        """
+        super().__init__(config)
+        self.num_labels = getattr(config, "num_labels", 2)
+        self.model = KBLaMBitNetModel(config)
+        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+    ):
+        """
+        Forward pass for sequence classification.
+        Pools the last non-padding token and applies a linear classifier.
+        Computes loss if labels are provided.
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        hidden_states = outputs[0]
+        logits = self.score(hidden_states)
+
+        # Pool the last non-padding token for each sequence
+        # This is standard for transformer-based sequence classification
+        if input_ids is not None:
+            batch_size = input_ids.shape[0]
+            if self.config.pad_token_id is not None:
+                sequence_lengths = (input_ids != self.config.pad_token_id).sum(-1) - 1
+            else:
+                sequence_lengths = -1
+        else:
+            batch_size = inputs_embeds.shape[0]
+            sequence_lengths = -1
+
+        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
+
+        loss = None
+        if labels is not None:
+            labels = labels.to(pooled_logits.device)
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                if self.num_labels == 1:
+                    loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
+                else:
+                    loss = loss_fct(pooled_logits, labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss()
+                loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(pooled_logits, labels)
+        if not return_dict:
+            output = (pooled_logits,) + outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+        return SequenceClassifierOutput(
+            loss=loss,
+            logits=pooled_logits,
+            hidden_states=outputs.hidden_states if hasattr(outputs, "hidden_states") else None,
+            attentions=outputs.attentions if hasattr(outputs, "attentions") else None,
+        )
+
+# --- Token Classification Head ---
+class KBLaMBitNetForTokenClassification(modeling_bitnet.BitNetPreTrainedModel):
+    """
+    Token classification head for BitNet, adapted for KBLaM.
+
+    This class enables BitNet to be fine-tuned and evaluated on tasks where each token
+    in the input sequence receives a label (e.g., NER, POS tagging, slot filling).
+    Applies a linear classifier to each token's hidden state.
+    """
+    def __init__(self, config):
+        """
+        Initialize the token classification head.
+        Args:
+            config: Model configuration with num_labels and classifier_dropout.
+        """
+        super().__init__(config)
+        self.num_labels = getattr(config, "num_labels", 2)
+        self.model = KBLaMBitNetModel(config)
+        self.dropout = nn.Dropout(getattr(config, "classifier_dropout", 0.1))
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        self.post_init()
+
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        position_ids=None,
+        past_key_values=None,
+        inputs_embeds=None,
+        labels=None,
+        use_cache=None,
+        output_attentions=None,
+        output_hidden_states=None,
+        return_dict=None,
+    ):
+        """
+        Forward pass for token classification.
+        Applies a linear classifier to each token.
+        Computes loss for active (non-masked) tokens if labels are provided.
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+        sequence_output = outputs[0]
+        sequence_output = self.dropout(sequence_output)
+        logits = self.classifier(sequence_output)
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss()
+            # Only compute loss for active tokens
+            if attention_mask is not None:
+                active_loss = attention_mask.view(-1) == 1
+                active_logits = logits.view(-1, self.num_labels)[active_loss]
+                active_labels = labels.view(-1)[active_loss]
+                loss = loss_fct(active_logits, active_labels)
+            else:
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+        if not return_dict:
+            output = (logits,) + outputs[1:]
+            return ((loss,) + output) if loss is not None else output
+        return TokenClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states if hasattr(outputs, "hidden_states") else None,
+            attentions=outputs.attentions if hasattr(outputs, "attentions") else None,
+        )
+
 # This is the squared ReLU activation function specified in the BitNet config.json
 def relu2(x):
+    """
+    Squared ReLU activation function as specified in BitNet config.
+    Used in the MLP layers for non-linearity.
+    """
     return torch.pow(F.relu(x), 2)
 
 # Copied from transformers.models.llama.modeling_llama._make_causal_mask
@@ -45,7 +228,8 @@ def _make_causal_mask(
     input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
 ):
     """
-    Make causal mask used for bi-directional self-attention.
+    Create a causal mask for self-attention, preventing tokens from attending to future tokens.
+    Used in decoder-only transformer architectures.
     """
     bsz, tgt_len = input_ids_shape
     mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
@@ -61,7 +245,8 @@ def _make_causal_mask(
 # Copied from transformers.models.llama.modeling_llama._expand_mask
 def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] = None):
     """
-    Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
+    Expands a 2D attention mask to 4D for use in multi-head attention.
+    This allows masking of padding tokens in the attention mechanism.
     """
     bsz, src_len = mask.size()
     tgt_len = tgt_len if tgt_len is not None else src_len
@@ -73,7 +258,16 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
 class KBLaMBitNetMLP(nn.Module):
+    """
+    Feed-forward (MLP) block for BitNet, using squared ReLU activation.
+    This is used in each decoder layer after self-attention.
+    """
     def __init__(self, config: configuration_bitnet.BitNetConfig):
+        """
+        Initialize the MLP block.
+        Args:
+            config: BitNetConfig with hidden and intermediate sizes.
+        """
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -84,11 +278,27 @@ class KBLaMBitNetMLP(nn.Module):
         self.act_fn = relu2
 
     def forward(self, x):
+        """
+        Forward pass for the MLP block.
+        Applies two linear projections with squared ReLU activation and elementwise multiplication.
+        """
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
 
 class KBLaMBitNetAttention(nn.Module):
+    """
+    Multi-head self-attention module for BitNet, with KBLaM extensions.
+
+    Supports standard attention as well as knowledge base (KB) integration for retrieval-augmented generation.
+    Implements rotary position embeddings and optional rectangular attention for KB.
+    """
     def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: Optional[int] = None):
+        """
+        Initialize the attention module.
+        Args:
+            config: BitNetConfig with attention parameters.
+            layer_idx: Index of the decoder layer (for KB integration).
+        """
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -134,6 +344,11 @@ class KBLaMBitNetAttention(nn.Module):
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        """
+        Forward pass for multi-head self-attention.
+        Handles both standard and KB-augmented attention, with rotary embeddings.
+        Returns attention output, (optionally) attention weights, and cache for fast decoding.
+        """
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
@@ -262,7 +477,17 @@ class KBLaMBitNetAttention(nn.Module):
 
 
 class KBLaMBitNetDecoderLayer(nn.Module):
+    """
+    Single decoder layer for BitNet, with self-attention and MLP blocks.
+    Integrates KBLaM attention for knowledge base retrieval if configured.
+    """
     def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int):
+        """
+        Initialize the decoder layer.
+        Args:
+            config: BitNetConfig with layer parameters.
+            layer_idx: Index of this decoder layer.
+        """
         super().__init__()
         self.hidden_size = config.hidden_size
         self.self_attn = KBLaMBitNetAttention(config=config, layer_idx=layer_idx)
@@ -285,6 +510,11 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+        """
+        Forward pass for a single decoder layer.
+        Applies self-attention, MLP, and layer normalization, with optional KB integration.
+        Returns hidden states and (optionally) attention weights and cache.
+        """
         if kb_config is not None and self.self_attn.layer_idx is not None and self.self_attn.layer_idx % kb_config.kb_layer_frequency == 0:
             logger.debug(f"KB-ATTN: DecoderLayer {self.self_attn.layer_idx} received kb_config.")
 
@@ -326,7 +556,19 @@ class KBLaMBitNetDecoderLayer(nn.Module):
 
 
 class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
+    """
+    Main BitNet model body for KBLaM.
+
+    This class wraps the BitNet transformer stack, providing input/output embedding layers,
+    a stack of decoder layers, and rotary position embeddings. It supports both standard
+    language modeling and knowledge base-augmented tasks.
+    """
     def __init__(self, config: configuration_bitnet.BitNetConfig):
+        """
+        Initialize the BitNet model body.
+        Args:
+            config: BitNetConfig with model hyperparameters.
+        """
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -342,12 +584,21 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         self.post_init()
 
     def get_input_embeddings(self):
+        """
+        Return the input embedding layer.
+        """
         return self.embed_tokens
 
     def set_input_embeddings(self, value):
+        """
+        Set the input embedding layer.
+        """
         self.embed_tokens = value
 
     def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
+        """
+        Prepare the combined attention mask for the decoder, including causal and padding masks.
+        """
         # create causal mask
         # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
         combined_attention_mask = None
@@ -387,6 +638,12 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        """
+        Forward pass for the BitNet model body.
+        Handles input embedding, rotary position embedding, attention mask prep, and decoder stack.
+        Supports both standard and KB-augmented tasks.
+        Returns hidden states, (optionally) attention weights, and cache.
+        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -500,7 +757,19 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
 
 
 class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedModel):
+    """
+    Causal Language Modeling head for BitNet, adapted for KBLaM.
+
+    This class enables BitNet to be used for standard left-to-right language modeling tasks,
+    including text generation, continuation, and knowledge-augmented generation. It supports
+    HuggingFace's generation utilities and integrates with KBLaM's knowledge base features.
+    """
     def __init__(self, config):
+        """
+        Initialize the CausalLM head.
+        Args:
+            config: Model configuration with vocab size and hidden size.
+        """
         super().__init__(config)
         self.model = KBLaMBitNetModel(config)
         self.vocab_size = config.vocab_size
@@ -508,24 +777,47 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         self.post_init()
 
     def get_input_embeddings(self):
+        """
+        Return the input embedding layer from the underlying model.
+        """
         return self.model.embed_tokens
 
     def set_input_embeddings(self, value):
+        """
+        Set the input embedding layer for the underlying model.
+        """
         self.model.embed_tokens = value
 
     def get_output_embeddings(self):
+        """
+        Return the output (language modeling) head.
+        """
         return self.lm_head
 
     def set_output_embeddings(self, new_embeddings):
+        """
+        Set the output (language modeling) head.
+        """
         self.lm_head = new_embeddings
 
     def set_decoder(self, decoder):
+        """
+        Set the underlying transformer model (decoder stack).
+        """
         self.model = decoder
 
     def get_decoder(self):
+        """
+        Return the underlying transformer model (decoder stack).
+        """
         return self.model
 
     def load_query_head(self, query_head_path):
+        """
+        Load a query head (adapter weights) from a file for knowledge base integration.
+        Args:
+            query_head_path: Path to the saved query head weights.
+        """
         self.model.load_state_dict(torch.load(query_head_path), strict=False)
 
     def forward(
@@ -547,6 +839,11 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         attention_file_base_name: Optional[str] = None,
         tokenizer: Optional[object] = None, # Included for compatibility with the eval script
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        """
+        Forward pass for Causal Language Modeling.
+        Computes logits and (optionally) loss for next-token prediction.
+        Supports knowledge base integration and HuggingFace generation utilities.
+        """
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -606,6 +903,10 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
     def prepare_inputs_for_generation(
         self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
+        """
+        Prepare model inputs for HuggingFace's generation utilities.
+        Handles batch expansion, position id creation, and KBLaM-specific arguments.
+        """
         # Omit `kwargs` that are not used by `prepare_inputs_for_generation`
         # to avoid redundant warnings.
         kwarg_keys = ["kb_kvs", "kb_config"]
@@ -659,6 +960,14 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
 
     @staticmethod
     def _reorder_cache(past_key_values, beam_idx):
+        """
+        Reorder the cache for beam search during generation.
+        Args:
+            past_key_values: Tuple of cached key/value states for each layer.
+            beam_idx: Indices for reordering the batch.
+        Returns:
+            Reordered cache tuple.
+        """
         reordered_past = ()
         for layer_past in past_key_values:
             reordered_past += (

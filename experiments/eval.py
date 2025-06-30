@@ -356,7 +356,7 @@ parent_parser.add_argument(
 parent_parser.add_argument(
     "--model_dir", type=str, help="Directory containing the model"
 )
-parent_parser.add_argument("--save_dir", type=str, help="Directory to save outputs")
+parent_parser.add_argument("--save_dir", type=str, help="Directory to save outputs", default="output")
 parent_parser.add_argument("--seed", type=int, help="Random seed for reproducibility")
 parent_parser.add_argument(
     "--test_dataset", type=str, help="Source of test KB (assumes KV pair format)"

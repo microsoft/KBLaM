@@ -583,7 +583,7 @@ class Trainer:
         self.llm_type = llm_type
 
         self.model = llm_model
-        # self.model.gradient_checkpointing_enable()
+        self.model.gradient_checkpointing_enable()
 
         self.device = device if device is not None else self.accelerator.device
         self.kbretriever = kbretriever
@@ -619,7 +619,6 @@ class Trainer:
         llm_q_params = []
         for name, param in self.model.named_parameters():
             if "q_proj_new.weight" in name:
-                # Extract layer index from name (e.g., model.layers.0.self_attn.q_proj_new.weight)
                 import re
                 m = re.search(r"layers\.(\d+)\.self_attn\.q_proj_new\.weight", name)
                 if m:
@@ -637,16 +636,26 @@ class Trainer:
         # 5. Construct optimizer
         from itertools import chain
         params_to_train = list(chain(encoder_params, llm_q_params))
-        # Debug: print param ids and shapes
         param_id_map = {id(p): n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters())}
         for p in params_to_train:
             pname = param_id_map.get(id(p), None)
             self.logger.debug(f"[BITNET] Optimizer param: {pname}, id={id(p)}, shape={getattr(p, 'shape', None)}, dtype={getattr(p, 'dtype', None)}, device={getattr(p, 'device', None)}")
-        # Use the learning rate from the --lr argument only
         self.logger.info("Using torch.optim.AdamW optimizer for all models (including BitNet). Only query head(s) and encoder are trainable.")
         optim = AdamW(params_to_train, lr=self.lr)
         self.logger.info("Optimizer recreated")
-        return None, optim # No scheduler for now
+
+        # --- Linear LR decay with warmup for BitNet (faithful to Llama/Phi3) ---
+        scheduler = None
+        if self.use_lr_decay:
+            from transformers import get_linear_schedule_with_warmup
+            num_warmup_steps = int(0.06 * self.num_steps)  # 6% of total steps, as in Llama/Phi3
+            scheduler = get_linear_schedule_with_warmup(
+                optim,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=self.num_steps,
+            )
+            self.logger.info(f"[BITNET] Using linear LR scheduler with {num_warmup_steps} warmup steps and {self.num_steps} total steps.")
+        return scheduler, optim
 
     def train(
         self,
