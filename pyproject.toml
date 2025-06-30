@@ -15,8 +15,8 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "accelerate",
-    "datasets==3.2.0",
-    "transformers==4.46.0",
+    "datasets==3.6.0",
+    "transformers==4.53.0",
     "torch",
     "sentence_transformers",
     "azure-ai-ml",
