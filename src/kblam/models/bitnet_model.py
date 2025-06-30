@@ -372,7 +372,7 @@ class KBLaMBitNetAttention(nn.Module):
 
         past_key_value = (key_states, value_states) if use_cache else None
 
-        # KBLaM Rectangular Attention Logic
+        # KBLaM Rectangular Attention Logic with Dynamic KB Sparsify
         if kb_config is not None and self.layer_idx is not None and self.layer_idx % kb_config.kb_layer_frequency == 0:
             kb_key_states_full, kb_value_states_full = kb_kvs
 
@@ -406,25 +406,41 @@ class KBLaMBitNetAttention(nn.Module):
             value_states = modeling_bitnet.repeat_kv(value_states, self.num_key_value_groups)
             kb_key_states = modeling_bitnet.repeat_kv(kb_key_states, self.num_key_value_groups)
             kb_value_states = modeling_bitnet.repeat_kv(kb_value_states, self.num_key_value_groups)
-            
+
             # No RoPE for KB queries
             attn_weights_kb = torch.matmul(kb_query_states, kb_key_states.transpose(2, 3)) / torch.sqrt(
                 torch.tensor(self.head_dim, dtype=torch.float32)
             )
-            
-            # Pruning logic for top-k KB selection
-            if kb_config.top_k_kb > 0:
+
+            # --- Dynamic KB Sparsify ---
+            dynamic_sparsify = getattr(kb_config, "dynamic_sparsify", False)
+            if dynamic_sparsify and kb_config.top_k_kb > 0:
                 kb_len = kb_key_states.shape[2]
                 topk = min(kb_len, kb_config.top_k_kb)
                 if topk < kb_len:
                     # Sum attention weights across heads and query sequence length to get a score per KB entry
-                    top_idx = attn_weights_kb.sum(dim=(1, 2)).topk(topk, dim=-1)[1]
-
+                    # (batch, heads, q_len, kb_len) -> (batch, kb_len)
+                    attn_scores = attn_weights_kb.sum(dim=(1, 2))
+                    top_idx = attn_scores.topk(topk, dim=-1)[1]
+                    # Logging for debug
+                    logger.debug(f"Dynamic KB Sparsify: Pruning KB from {kb_len} to {topk} entries for layer {self.layer_idx}.")
                     # Gather the top-k keys, values, and corresponding attention weights
                     idx_expanded_kv = top_idx.unsqueeze(1).unsqueeze(-1).expand(-1, self.num_heads, topk, self.head_dim)
                     kb_key_states = torch.gather(kb_key_states, 2, idx_expanded_kv)
                     kb_value_states = torch.gather(kb_value_states, 2, idx_expanded_kv)
-
+                    idx_expanded_attn = top_idx.unsqueeze(1).unsqueeze(1).expand(-1, self.num_heads, q_len, topk)
+                    attn_weights_kb = torch.gather(attn_weights_kb, 3, idx_expanded_attn)
+            elif kb_config.top_k_kb > 0:
+                # Legacy: prune only if top_k_kb is set, for backward compatibility
+                kb_len = kb_key_states.shape[2]
+                topk = min(kb_len, kb_config.top_k_kb)
+                if topk < kb_len:
+                    attn_scores = attn_weights_kb.sum(dim=(1, 2))
+                    top_idx = attn_scores.topk(topk, dim=-1)[1]
+                    logger.debug(f"KB Pruning (legacy): Pruning KB from {kb_len} to {topk} entries for layer {self.layer_idx}.")
+                    idx_expanded_kv = top_idx.unsqueeze(1).unsqueeze(-1).expand(-1, self.num_heads, topk, self.head_dim)
+                    kb_key_states = torch.gather(kb_key_states, 2, idx_expanded_kv)
+                    kb_value_states = torch.gather(kb_value_states, 2, idx_expanded_kv)
                     idx_expanded_attn = top_idx.unsqueeze(1).unsqueeze(1).expand(-1, self.num_heads, q_len, topk)
                     attn_weights_kb = torch.gather(attn_weights_kb, 3, idx_expanded_attn)
 
@@ -442,7 +458,7 @@ class KBLaMBitNetAttention(nn.Module):
             # Combine weights and apply softmax over all context (prompt + KB)
             attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            
+
             if save_attention_weights:
                 detached_weights = attn_weights_kb.detach().cpu().numpy()
                 save_path = os.path.join(attention_save_loc, f"{attention_file_base_name}_{self.layer_idx}.npy")
