@@ -51,29 +51,38 @@ class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel
         """
         Initialize the sequence classification head.
         Args:
-            config: Model configuration with num_labels and other settings.
+            config: Model configuration with num_labels, classifier_dropout, classifier_bias, etc.
         """
         super().__init__(config)
         self.num_labels = getattr(config, "num_labels", 2)
         self.model = KBLaMBitNetModel(config)
-        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=False)
+        # Expose classifier_dropout and classifier_bias in config, with robust defaults
+        classifier_dropout = float(getattr(config, "classifier_dropout", 0.0))
+        if hasattr(config, "enable_dropout") and not config.enable_dropout:
+            logger.info("Classifier dropout is DISABLED via config.enable_dropout (ablation mode)")
+            classifier_dropout = 0.0
+        classifier_bias = bool(getattr(config, "classifier_bias", False))
+        self.dropout = nn.Dropout(classifier_dropout)
+        self.score = nn.Linear(config.hidden_size, self.num_labels, bias=classifier_bias)
         self.post_init()
 
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> SequenceClassifierOutput:
         """
         Forward pass for sequence classification.
+        Returns:
+            SequenceClassifierOutput or tuple: HuggingFace output type (or tuple if return_dict=False).
         Pools the last non-padding token and applies a linear classifier.
         Computes loss if labels are provided.
         """
@@ -93,6 +102,11 @@ class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel
             return_dict=return_dict,
         )
         hidden_states = outputs[0]
+        # Ensure classifier head is on same device/dtype as model output
+        self.score = self.score.to(hidden_states.device, dtype=hidden_states.dtype)
+        self.dropout = self.dropout.to(hidden_states.device, dtype=hidden_states.dtype)
+        # Apply classifier dropout before the score layer
+        hidden_states = self.dropout(hidden_states)
         logits = self.score(hidden_states)
 
         # Pool the last non-padding token for each sequence (ONNX-friendly)
@@ -111,7 +125,9 @@ class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel
             batch_size = inputs_embeds.shape[0]
             sequence_lengths = (inputs_embeds.shape[1] - 1) * torch.ones(batch_size, dtype=torch.long, device=logits.device)
 
-        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
+        # Ensure gather is on correct device/dtype
+        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths.to(logits.device)]
+        pooled_logits = pooled_logits.to(logits.device, dtype=logits.dtype)
 
         loss = None
         if labels is not None:
@@ -158,30 +174,37 @@ class KBLaMBitNetForTokenClassification(modeling_bitnet.BitNetPreTrainedModel):
         """
         Initialize the token classification head.
         Args:
-            config: Model configuration with num_labels and classifier_dropout.
+            config: Model configuration with num_labels, classifier_dropout, classifier_bias, etc.
         """
         super().__init__(config)
         self.num_labels = getattr(config, "num_labels", 2)
         self.model = KBLaMBitNetModel(config)
-        self.dropout = nn.Dropout(getattr(config, "classifier_dropout", 0.1))
-        self.classifier = nn.Linear(config.hidden_size, self.num_labels)
+        classifier_dropout = float(getattr(config, "classifier_dropout", 0.1))
+        if hasattr(config, "enable_dropout") and not config.enable_dropout:
+            logger.info("Classifier dropout is DISABLED via config.enable_dropout (ablation mode)")
+            classifier_dropout = 0.0
+        classifier_bias = bool(getattr(config, "classifier_bias", False))
+        self.dropout = nn.Dropout(classifier_dropout)
+        self.classifier = nn.Linear(config.hidden_size, self.num_labels, bias=classifier_bias)
         self.post_init()
 
     def forward(
         self,
-        input_ids=None,
-        attention_mask=None,
-        position_ids=None,
-        past_key_values=None,
-        inputs_embeds=None,
-        labels=None,
-        use_cache=None,
-        output_attentions=None,
-        output_hidden_states=None,
-        return_dict=None,
-    ):
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> TokenClassifierOutput:
         """
         Forward pass for token classification.
+        Returns:
+            TokenClassifierOutput or tuple: HuggingFace output type (or tuple if return_dict=False).
         Applies a linear classifier to each token.
         Computes loss for active (non-masked) tokens if labels are provided.
         """
@@ -198,6 +221,9 @@ class KBLaMBitNetForTokenClassification(modeling_bitnet.BitNetPreTrainedModel):
             return_dict=return_dict,
         )
         sequence_output = outputs[0]
+        # Ensure classifier head is on same device/dtype as model output
+        self.classifier = self.classifier.to(sequence_output.device, dtype=sequence_output.dtype)
+        self.dropout = self.dropout.to(sequence_output.device, dtype=sequence_output.dtype)
         sequence_output = self.dropout(sequence_output)
         logits = self.classifier(sequence_output)
 
@@ -230,6 +256,14 @@ def relu2(x):
     """
     return torch.pow(F.relu(x), 2)
 
+def swiglu(x):
+    """
+    SwiGLU activation function (optionally supported).
+    x is expected to be split in half along the last dimension.
+    """
+    x1, x2 = x.chunk(2, dim=-1)
+    return F.silu(x1) * x2
+
 # Copied from transformers.models.llama.modeling_llama._make_causal_mask
 def _make_causal_mask(
     input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
@@ -237,6 +271,7 @@ def _make_causal_mask(
     """
     Create a causal mask for self-attention, preventing tokens from attending to future tokens.
     Used in decoder-only transformer architectures.
+    ONNX-friendly: avoids dynamic shapes, always returns a mask of the correct size.
     """
     bsz, tgt_len = input_ids_shape
     mask = torch.full((tgt_len, tgt_len), torch.finfo(dtype).min, device=device)
@@ -254,6 +289,7 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
     """
     Expands a 2D attention mask to 4D for use in multi-head attention.
     This allows masking of padding tokens in the attention mechanism.
+    ONNX-friendly: avoids dynamic shapes, always returns a mask of the correct size.
     """
     bsz, src_len = mask.size()
     tgt_len = tgt_len if tgt_len is not None else src_len
@@ -270,42 +306,61 @@ class KBLaMBitNetMLP(nn.Module):
     This is used in each decoder layer after self-attention.
     """
     def __init__(self, config: configuration_bitnet.BitNetConfig):
-        """
-        Initialize the MLP block.
-        Args:
-            config: BitNetConfig with hidden and intermediate sizes.
-        """
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = relu2
+
+        act_fn_name = getattr(config, "activation_function", "squared_relu")
+        if act_fn_name == "swiglu":
+            self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
+            self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
+            self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        else:
+            self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+            self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+            self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+
+        # Select activation function
+        if act_fn_name == "squared_relu":
+            self.act_fn = relu2
+        elif act_fn_name == "gelu":
+            self.act_fn = F.gelu
+        elif act_fn_name == "swiglu":
+            self.act_fn = swiglu
+        else:
+            raise ValueError(f"Unknown activation_function '{act_fn_name}'. Supported: squared_relu, gelu, swiglu.")
+
+        # Dropout after MLP (residual)
+        mlp_pdrop = getattr(config, "mlp_pdrop", 0.0)
+        if hasattr(config, "enable_dropout") and not config.enable_dropout:
+            logger.info("MLP dropout is DISABLED via config.enable_dropout (ablation mode)")
+            mlp_pdrop = 0.0
+        self.mlp_dropout = nn.Dropout(mlp_pdrop) if mlp_pdrop > 0 else nn.Identity()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for module in [self.gate_proj, self.up_proj, self.down_proj]:
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def forward(self, x):
-        """
-        Forward pass for the MLP block.
-        Applies two linear projections with squared ReLU activation and elementwise multiplication.
-        """
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        if getattr(self.config, "activation_function", "squared_relu") == "swiglu":
+            out = self.down_proj(self.act_fn(self.gate_proj(x) + self.up_proj(x)))
+        else:
+            out = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return self.mlp_dropout(out)
+
 
 
 class KBLaMBitNetAttention(nn.Module):
     """
     Multi-head self-attention module for BitNet, with KBLaM extensions.
-
     Supports standard attention as well as knowledge base (KB) integration for retrieval-augmented generation.
     Implements rotary position embeddings and optional rectangular attention for KB.
     """
     def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: Optional[int] = None):
-        """
-        Initialize the attention module.
-        Args:
-            config: BitNetConfig with attention parameters.
-            layer_idx: Index of the decoder layer (for KB integration).
-        """
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
@@ -328,13 +383,21 @@ class KBLaMBitNetAttention(nn.Module):
         self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        
         # New query head for KB interaction
         self.q_proj_new = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-
         # Projection for KB embeddings
         self.kb_k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.kb_v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """
+        Custom initialization for all linear layers (Xavier uniform, no bias).
+        """
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.o_proj, self.q_proj_new, self.kb_k_proj, self.kb_v_proj]:
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     def forward(
         self,
@@ -355,12 +418,19 @@ class KBLaMBitNetAttention(nn.Module):
         Forward pass for multi-head self-attention.
         Handles both standard and KB-augmented attention, with rotary embeddings.
         Returns attention output, (optionally) attention weights, and cache for fast decoding.
+        - Causal masking and padding are ONNX-friendly.
+        - All softmax and attention scores are computed in float32 for numerical stability, then cast back to model dtype.
+        - repeat_kv logic matches Llama/Phi-3 reference for GQA/MQA.
+        - Rotary embeddings are applied to both Q/K, theta is configurable.
         """
         bsz, q_len, _ = hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
+
+        # Ensure all new tensors are on the correct device
+        device = hidden_states.device
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -369,7 +439,7 @@ class KBLaMBitNetAttention(nn.Module):
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
             kv_seq_len += past_key_value[0].shape[-2]
-        
+
         cos, sin = position_embeddings
         query_states, key_states = modeling_bitnet.apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
@@ -415,9 +485,9 @@ class KBLaMBitNetAttention(nn.Module):
             kb_value_states = modeling_bitnet.repeat_kv(kb_value_states, self.num_key_value_groups)
 
             # No RoPE for KB queries
-            attn_weights_kb = torch.matmul(kb_query_states, kb_key_states.transpose(2, 3)) / torch.sqrt(
-                torch.tensor(self.head_dim, dtype=torch.float32)
-            )
+            attn_weights_kb = torch.matmul(
+                kb_query_states, kb_key_states.transpose(2, 3)
+            ) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32, device=device))
 
             # --- Dynamic KB Sparsify ---
             dynamic_sparsify = getattr(kb_config, "dynamic_sparsify", False)
@@ -455,16 +525,17 @@ class KBLaMBitNetAttention(nn.Module):
             if kb_config.kb_length_scaling:
                 attn_weights_kb += (torch.log(torch.tensor(kb_config.kb_max_train_triples)) - torch.log(torch.tensor(kb_key_states.shape[2]))).to(attn_weights_kb.device)
 
-            attn_weights_prompt = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(
-                torch.tensor(self.head_dim, dtype=torch.float32)
-            )
+            attn_weights_prompt = torch.matmul(
+                query_states, key_states.transpose(2, 3)
+            ) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32, device=device))
 
             if attention_mask is not None:
                 attn_weights_prompt = attn_weights_prompt + attention_mask
 
             # Combine weights and apply softmax over all context (prompt + KB)
             attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            # Numerical stability: always compute softmax in float32, then cast back
+            attn_weights = nn.functional.softmax(attn_weights.to(torch.float32), dim=-1).to(query_states.dtype)
 
             if save_attention_weights:
                 detached_weights = attn_weights_kb.detach().cpu().numpy()
@@ -479,14 +550,15 @@ class KBLaMBitNetAttention(nn.Module):
             # Standard attention if not a KB layer
             key_states = modeling_bitnet.repeat_kv(key_states, self.num_key_value_groups)
             value_states = modeling_bitnet.repeat_kv(value_states, self.num_key_value_groups)
-            attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / torch.sqrt(
-                torch.tensor(self.head_dim, dtype=torch.float32)
-            )
+            attn_weights = torch.matmul(
+                query_states, key_states.transpose(2, 3)
+            ) / torch.sqrt(torch.tensor(self.head_dim, dtype=torch.float32, device=device))
 
             if attention_mask is not None:
                 attn_weights = attn_weights + attention_mask
             
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+            # Numerical stability: always compute softmax in float32, then cast back
+            attn_weights = nn.functional.softmax(attn_weights.to(torch.float32), dim=-1).to(query_states.dtype)
             attn_output = torch.matmul(attn_weights, value_states)
 
         attn_output = attn_output.transpose(1, 2).contiguous()
@@ -499,30 +571,40 @@ class KBLaMBitNetAttention(nn.Module):
         return attn_output, attn_weights, past_key_value
 
 
+
 class KBLaMBitNetDecoderLayer(nn.Module):
     """
     Single decoder layer for BitNet, with self-attention and MLP blocks.
     Integrates KBLaM attention for knowledge base retrieval if configured.
     """
     def __init__(self, config: configuration_bitnet.BitNetConfig, layer_idx: int):
-        """
-        Initialize the decoder layer.
-        Args:
-            config: BitNetConfig with layer parameters.
-            layer_idx: Index of this decoder layer.
-        """
         super().__init__()
         self.hidden_size = config.hidden_size
         logger.info(f"Instantiating KBLaMBitNetDecoderLayer (layer_idx={layer_idx}) with hidden_size={config.hidden_size}")
         self.self_attn = KBLaMBitNetAttention(config=config, layer_idx=layer_idx)
         self.mlp = KBLaMBitNetMLP(config)
-        self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # RMSNorm: match Llama/Phi-3 epsilon, dtype
+        self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=getattr(config, 'rms_norm_eps', 1e-6)).to(torch.float32)
+        self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=getattr(config, 'rms_norm_eps', 1e-6)).to(torch.float32)
         # Dropout for residual connections (after attn, after MLP)
         resid_pdrop = getattr(config, "resid_pdrop", 0.0)
+        if hasattr(config, "enable_dropout") and not config.enable_dropout:
+            logger.info(f"Residual dropout is DISABLED via config.enable_dropout (ablation mode) for decoder layer {layer_idx}")
+            resid_pdrop = 0.0
         if resid_pdrop > 0:
             logger.info(f"Residual dropout enabled for decoder layer {layer_idx}: resid_pdrop={resid_pdrop}")
         self.resid_dropout = nn.Dropout(resid_pdrop) if resid_pdrop > 0 else nn.Identity()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """
+        Re-initialize all submodules for reproducibility.
+        """
+        if hasattr(self.self_attn, 'reset_parameters'):
+            self.self_attn.reset_parameters()
+        if hasattr(self.mlp, 'reset_parameters'):
+            self.mlp.reset_parameters()
+        # RMSNorm layers: no learnable weights except scale, which is initialized in the RMSNorm class
 
     def forward(
         self,
@@ -584,39 +666,47 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         return outputs
 
 
+
 class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
     """
     Main BitNet model body for KBLaM.
-
     This class wraps the BitNet transformer stack, providing input/output embedding layers,
     a stack of decoder layers, and rotary position embeddings. It supports both standard
     language modeling and knowledge base-augmented tasks.
     """
     def __init__(self, config: configuration_bitnet.BitNetConfig):
-        """
-        Initialize the BitNet model body.
-        Args:
-            config: BitNetConfig with model hyperparameters.
-        """
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-
         logger.info(f"Instantiating KBLaMBitNetModel with vocab_size={config.vocab_size}, hidden_size={config.hidden_size}")
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         # Dropout for embeddings
         embd_pdrop = getattr(config, "embd_pdrop", 0.0)
+        if hasattr(config, "enable_dropout") and not config.enable_dropout:
+            logger.info("Embedding dropout is DISABLED via config.enable_dropout (ablation mode)")
+            embd_pdrop = 0.0
         if embd_pdrop > 0:
             logger.info(f"Embedding dropout enabled: embd_pdrop={embd_pdrop}")
         self.embd_dropout = nn.Dropout(embd_pdrop) if embd_pdrop > 0 else nn.Identity()
         self.layers = nn.ModuleList(
             [KBLaMBitNetDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
-        self.norm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        # RMSNorm: match Llama/Phi-3 epsilon, dtype
+        self.norm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=getattr(config, 'rms_norm_eps', 1e-6)).to(torch.float32)
         self.rotary_emb = modeling_bitnet.BitNetRotaryEmbedding(config=config)
-
         self.gradient_checkpointing = False
         self.post_init()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        """
+        Re-initialize all submodules for reproducibility.
+        """
+        nn.init.normal_(self.embed_tokens.weight, mean=0.0, std=0.02)
+        for layer in self.layers:
+            if hasattr(layer, 'reset_parameters'):
+                layer.reset_parameters()
+        # RMSNorm and rotary_emb: rely on their own init
 
     def get_input_embeddings(self):
         """
@@ -658,7 +748,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -675,6 +765,8 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         """
         Forward pass for the BitNet model body.
+        Returns:
+            BaseModelOutputWithPast or tuple: HuggingFace output type (or tuple if return_dict=False).
         Handles input embedding, rotary position embedding, attention mask prep, and decoder stack.
         Supports both standard and KB-augmented tasks.
         Returns hidden states, (optionally) attention weights, and cache.
@@ -861,7 +953,7 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
 
     def forward(
         self,
-        input_ids: torch.LongTensor = None,
+        input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_values: Optional[List[torch.FloatTensor]] = None,
@@ -877,9 +969,11 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         attention_save_loc: Optional[str] = None,
         attention_file_base_name: Optional[str] = None,
         tokenizer: Optional[object] = None, # Included for compatibility with the eval script
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    ) -> CausalLMOutputWithPast:
         """
         Forward pass for Causal Language Modeling.
+        Returns:
+            CausalLMOutputWithPast or tuple: HuggingFace output type (or tuple if return_dict=False).
         Computes logits and (optionally) loss for next-token prediction.
         Supports knowledge base integration and HuggingFace generation utilities.
         """
@@ -911,8 +1005,10 @@ class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedMo
         )
 
         hidden_states = outputs[0]
+        # Ensure output head is on correct device/dtype
+        self.lm_head = self.lm_head.to(hidden_states.device, dtype=hidden_states.dtype)
         logits = self.lm_head(hidden_states)
-        logits = logits.float()
+        logits = logits.to(hidden_states.device, dtype=hidden_states.dtype)
 
         loss = None
         if labels is not None:

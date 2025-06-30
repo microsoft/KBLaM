@@ -99,37 +99,88 @@ There are a number of optional arguments in `train.py` that you may want to cons
 
 **Training with OpenAI Embeddings:**
 ```bash
-python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct \
+--hf_token YOUR_HF_TOKEN --encoder_spec OAI --dataset_dir ./datasets --train_dataset synthetic \
+--N 120000 --B 10 --total_steps 601  --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 **Training with Local Sentence Transformer Embeddings:**
 ```bash
-python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct \
+--hf_token YOUR_HF_TOKEN --encoder_spec all-MiniLM-L6-v2 --dataset_dir ./datasets --train_dataset synthetic \
+--N 120000 --B 10 --total_steps 601 --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 ### Phi-3 Examples
 
 **Training with OpenAI Embeddings:**
 ```bash
-python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct \
+--dataset_dir ./datasets --encoder_spec OAI --train_dataset synthetic \
+--N 120000 --B 10 --total_steps 601 --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 **Training with Local Sentence Transformer Embeddings:**
 ```bash
-python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct \
+--dataset_dir ./datasets --train_dataset synthetic --encoder_spec all-MiniLM-L6-v2 \
+--N 120000 --B 10 --total_steps 601 --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 ### BitNet Examples
 
 **Training with OpenAI Embeddings:**
 ```bash
-python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 \
+--dataset_dir ./datasets --encoder_spec OAI --train_dataset synthetic \
+--N 120000 --B 10 --total_steps 601 --use_cached_embd --key_embd_src key --use_data_aug
 ```
 
 **Training with Local Sentence Transformer Embeddings:**
 ```bash
-python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 \
+--dataset_dir ./datasets --encoder_spec all-MiniLM-L6-v2 --train_dataset synthetic \
+--N 120000 --B 10 --total_steps 601--use_cached_embd --key_embd_src key --use_data_aug
 ```
+
+
+> **Note:** The above commands use the recommended defaults for most users.  
+> Advanced users and researchers can further customize BitNet/KBLaM training with additional flags (e.g., `--classifier_dropout`, `--activation_function`, `--kb_layer_frequency`, etc.).  
+> See the table below for a full list of BitNet/KBLaM-specific flags and their default values.
+
+<details>
+<summary>Show BitNet/KBLaM-Specific Flags and Defaults</summary>
+
+| Flag                        | Description                                                                                  | Default Value         |
+|-----------------------------|----------------------------------------------------------------------------------------------|----------------------|
+| `classifier_dropout`        | Dropout probability for the classifier head (sequence/token classification).                  | `0.0` (sequence), `0.1` (token) |
+| `classifier_bias`           | Whether to use a bias term in the classifier head.                                           | `False`              |
+| `enable_dropout`            | Globally enable/disable all dropout (for ablation studies).                                  | `True` (if not set, dropout enabled) |
+| `activation_function`       | Activation function for MLP layers. Supported: `squared_relu`, `gelu`, `swiglu`.            | `"squared_relu"`     |
+| `mlp_pdrop`                 | Dropout probability after MLP layers.                                                        | `0.0`                |
+| `resid_pdrop`               | Dropout probability for residual connections (after attn/MLP).                               | `0.0`                |
+| `embd_pdrop`                | Dropout probability for input embeddings.                                                    | `0.0`                |
+| `kb_layer_frequency`        | How often to insert KB-augmented attention layers (every N layers).                          | (must be set in config) |
+| `dynamic_sparsify`          | Enable dynamic pruning of KB entries per layer (for efficiency).                             | `False`              |
+| `top_k_kb`                  | Number of KB entries to keep after pruning (if pruning enabled).                             | `0`                  |
+| `kb_length_scaling`         | Enable scaling of KB attention scores based on KB length (for generalization).               | `False`              |
+| `kb_max_train_triples`      | Maximum KB size seen during training (for length scaling).                                   | (must be set in config) |
+| `num_labels`                | Number of output labels for classification heads.                                            | `2`                  |
+| `hidden_size`               | Model hidden size (embedding dimension).                                                     | (from model config)  |
+| `num_attention_heads`       | Number of attention heads.                                                                   | (from model config)  |
+| `num_key_value_heads`       | Number of key/value heads (for GQA/MQA).                                                     | (from model config)  |
+| `max_position_embeddings`   | Maximum sequence length supported by the model.                                              | (from model config)  |
+| `rope_theta`                | Rotary embedding base (for position encoding).                                               | (from model config)  |
+| `rms_norm_eps`              | Epsilon for RMSNorm layers (for numerical stability).                                        | `1e-6`               |
+| `pad_token_id`              | Padding token ID.                                                                            | (from model config)  |
+| `problem_type`              | For classification heads: `regression`, `single_label_classification`, `multi_label_classification`. | `None` (auto-detect) |
+| `use_return_dict`           | Whether to return HuggingFace output objects or tuples.                                      | (from model config)  |
+| `output_attentions`         | Whether to return attention weights.                                                         | (from model config)  |
+| `output_hidden_states`      | Whether to return all hidden states.                                                         | (from model config)  |
+| `use_cache`                 | Whether to use key/value caching for fast decoding.                                          | (from model config)  |
+| `gradient_checkpointing`    | Enable gradient checkpointing for memory efficiency.                                         | `False`              |
+
+</details>
 
 ## Evaluation
 
@@ -143,17 +194,43 @@ The examples below show how to evaluate for generation quality. The command stru
 
 **Note:** You must provide a Hugging Face token to evaluate LLaMA models.
 ```bash
-python experiments/eval.py generation --llm_type llama3 --llm_base_dir meta-llama/Llama-3.2-1B-Instruct --model_dir path/to/your/llama3/checkpoint --encoder_dir path/to/your/llama3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --hf_token YOUR_HF_TOKEN --encoder_spec OAI --topk_size 20
+python experiments/eval.py generation --llm_type llama3 \
+--llm_base_dir meta-llama/Llama-3.2-1B-Instruct \
+--dataset_dir ./datasets \
+--test_dataset synthetic.json \
+--kb_size 200 \
+--topk_size 20 \
+--hf_token YOUR_HF_TOKEN \
+--encoder_spec OAI \
+--model_dir path/to/your/llama3/checkpoint \
+--encoder_dir path/to/your/llama3/encoder
 ```
+
 
 ### Phi-3 Example
 ```bash
-python experiments/eval.py generation --llm_type phi3 --llm_base_dir microsoft/Phi-3-mini-4k-instruct  --model_dir path/to/your/phi3/checkpoint --encoder_dir path/to/your/phi3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --encoder_spec OAI --topk_size 20
+python experiments/eval.py generation --llm_type phi3 \
+--llm_base_dir microsoft/Phi-3-mini-4k-instruct \
+--model_dir path/to/your/phi3/checkpoint \
+--encoder_dir path/to/your/phi3/encoder \
+--dataset_dir ./datasets \
+--test_dataset synthetic.json \
+--kb_size 200 \
+--encoder_spec OAI \
+--topk_size 20
 ```
 
 ### BitNet Example
 ```bash
-python experiments/eval.py generation --llm_type bitnet --llm_base_dir microsoft/bitnet-b1.58-2B-4T-bf16 --model_dir path/to/your/bitnet/checkpoint --encoder_dir path/to/your/bitnet/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --encoder_spec all-MiniLM-L6-v2 --topk_size 20
+python experiments/eval.py generation --llm_type bitnet \
+--llm_base_dir microsoft/bitnet-b1.58-2B-4T-bf16 \
+--model_dir path/to/your/bitnet/checkpoint \
+--encoder_dir path/to/your/bitnet/encoder \
+--dataset_dir ./datasets \
+--test_dataset synthetic.json \
+--kb_size 200 \
+--encoder_spec all-MiniLM-L6-v2 \
+--topk_size 20
 ```
 
 ## Contributing
