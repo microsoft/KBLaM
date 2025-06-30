@@ -78,6 +78,9 @@ class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel
         Computes loss if labels are provided.
         """
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        if input_ids is not None and inputs_embeds is not None:
+            logger.error("Both input_ids and inputs_embeds were provided to SequenceClassification forward. Only one should be set.")
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -92,17 +95,21 @@ class KBLaMBitNetForSequenceClassification(modeling_bitnet.BitNetPreTrainedModel
         hidden_states = outputs[0]
         logits = self.score(hidden_states)
 
-        # Pool the last non-padding token for each sequence
-        # This is standard for transformer-based sequence classification
+        # Pool the last non-padding token for each sequence (ONNX-friendly)
+        logger.debug("Pooling last non-padding token for sequence classification (ONNX-friendly logic)")
         if input_ids is not None:
             batch_size = input_ids.shape[0]
             if self.config.pad_token_id is not None:
-                sequence_lengths = (input_ids != self.config.pad_token_id).sum(-1) - 1
+                # ONNX-friendly: find first pad token, subtract 1, modulo to stay in bounds
+                pad_mask = (input_ids == self.config.pad_token_id).int()
+                # argmax returns first occurrence of pad_token_id or 0 if none
+                sequence_lengths = pad_mask.argmax(dim=-1) - 1
+                sequence_lengths = sequence_lengths % input_ids.shape[-1]
             else:
-                sequence_lengths = -1
+                sequence_lengths = (input_ids.shape[-1] - 1) * torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
         else:
             batch_size = inputs_embeds.shape[0]
-            sequence_lengths = -1
+            sequence_lengths = (inputs_embeds.shape[1] - 1) * torch.ones(batch_size, dtype=torch.long, device=logits.device)
 
         pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
 
@@ -506,12 +513,15 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         """
         super().__init__()
         self.hidden_size = config.hidden_size
+        logger.info(f"Instantiating KBLaMBitNetDecoderLayer (layer_idx={layer_idx}) with hidden_size={config.hidden_size}")
         self.self_attn = KBLaMBitNetAttention(config=config, layer_idx=layer_idx)
         self.mlp = KBLaMBitNetMLP(config)
         self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         # Dropout for residual connections (after attn, after MLP)
         resid_pdrop = getattr(config, "resid_pdrop", 0.0)
+        if resid_pdrop > 0:
+            logger.info(f"Residual dropout enabled for decoder layer {layer_idx}: resid_pdrop={resid_pdrop}")
         self.resid_dropout = nn.Dropout(resid_pdrop) if resid_pdrop > 0 else nn.Identity()
 
     def forward(
@@ -592,9 +602,12 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
+        logger.info(f"Instantiating KBLaMBitNetModel with vocab_size={config.vocab_size}, hidden_size={config.hidden_size}")
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         # Dropout for embeddings
         embd_pdrop = getattr(config, "embd_pdrop", 0.0)
+        if embd_pdrop > 0:
+            logger.info(f"Embedding dropout enabled: embd_pdrop={embd_pdrop}")
         self.embd_dropout = nn.Dropout(embd_pdrop) if embd_pdrop > 0 else nn.Identity()
         self.layers = nn.ModuleList(
             [KBLaMBitNetDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
@@ -674,6 +687,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if input_ids is not None and inputs_embeds is not None:
+            logger.error("Both input_ids and inputs_embeds were provided to KBLaMBitNetModel forward. Only one should be set.")
             raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif input_ids is not None:
             batch_size, seq_length = input_ids.shape
