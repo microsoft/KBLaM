@@ -31,9 +31,6 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from transformers.modeling_outputs import SequenceClassifierOutput, TokenClassifierOutput
 from transformers.generation.utils import GenerationMixin
 
-# These imports depend on the custom transformers fork specified in plan.md
-
-
 from kblam.models.kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
@@ -311,7 +308,7 @@ class KBLaMBitNetMLP(nn.Module):
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
 
-        act_fn_name = getattr(config, "activation_function", "squared_relu")
+        act_fn_name = getattr(config, "activation_function", "swiglu")
         if act_fn_name == "swiglu":
             self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
             self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
@@ -340,8 +337,25 @@ class KBLaMBitNetMLP(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
+        """
+        Custom initialization for all linear layers.
+        Uses Kaiming Uniform for layers before ReLU-based activations.
+        Uses a scaled normal initializer for the final output projection.
+        """
+        act_fn_name = getattr(self.config, "activation_function", "swiglu")
+        if act_fn_name in ("squared_relu", "gelu"):
+            # Kaiming init is designed for ReLU-family activations
+            nn.init.kaiming_uniform_(self.gate_proj.weight, a=0, mode='fan_in', nonlinearity='relu')
+            nn.init.kaiming_uniform_(self.up_proj.weight, a=0, mode='fan_in', nonlinearity='relu')
+        else:
+            # Xavier is a safe default for other activations like SwiGLU
+            nn.init.xavier_uniform_(self.gate_proj.weight)
+            nn.init.xavier_uniform_(self.up_proj.weight)
+
+        # For the final projection layer in the MLP, a scaled normal init is often better
+        nn.init.normal_(self.down_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
+
         for module in [self.gate_proj, self.up_proj, self.down_proj]:
-            nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
 
@@ -392,12 +406,19 @@ class KBLaMBitNetAttention(nn.Module):
 
     def reset_parameters(self):
         """
-        Custom initialization for all linear layers (Xavier uniform, no bias).
+        Custom initialization for all linear layers.
+        Uses Xavier uniform for query/key/value projections.
+        Uses a scaled normal initializer for the final output projection.
         """
-        for module in [self.q_proj, self.k_proj, self.v_proj, self.o_proj, self.q_proj_new, self.kb_k_proj, self.kb_v_proj]:
+        for module in [self.q_proj, self.k_proj, self.v_proj, self.q_proj_new, self.kb_k_proj, self.kb_v_proj]:
             nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
+        
+        # Use a scaled normal distribution for the output projection, similar to GPT-2/3
+        nn.init.normal_(self.o_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
+        if self.o_proj.bias is not None:
+            nn.init.zeros_(self.o_proj.bias)
 
     def forward(
         self,
@@ -451,18 +472,23 @@ class KBLaMBitNetAttention(nn.Module):
 
         # KBLaM Rectangular Attention Logic with Dynamic KB Sparsify
         if kb_config is not None and self.layer_idx is not None and self.layer_idx % kb_config.kb_layer_frequency == 0:
-            kb_key_states_full, kb_value_states_full = kb_kvs
+            use_efficient_kb_proj = getattr(kb_config, "use_efficient_kb_proj", False)
 
-            # Calculate the index for the current layer's slice of the KB embedding
-            kb_layer_index = self.layer_idx // kb_config.kb_layer_frequency
-            start_index = kb_layer_index * self.hidden_size
-            end_index = (kb_layer_index + 1) * self.hidden_size
+            if use_efficient_kb_proj:
+                # In this path, kb_kvs is already pre-projected by the shared layer in KBLaMBitNetModel.
+                # The per-layer kb_k_proj and kb_v_proj act as adapters on this shared representation.
+                kb_key_states_layer, kb_value_states_layer = kb_kvs
+            else:
+                # --- Original KBLaM Implementation ---
+                # Slice the full KB embedding tensor for the current layer.
+                kb_key_states_full, kb_value_states_full = kb_kvs
+                kb_layer_index = self.layer_idx // kb_config.kb_layer_frequency
+                start_index = kb_layer_index * self.hidden_size
+                end_index = (kb_layer_index + 1) * self.hidden_size
+                kb_key_states_layer = kb_key_states_full[:, :, start_index:end_index]
+                kb_value_states_layer = kb_value_states_full[:, :, start_index:end_index]
 
-            # Slice the embeddings for the current layer
-            kb_key_states_layer = kb_key_states_full[:, :, start_index:end_index]
-            kb_value_states_layer = kb_value_states_full[:, :, start_index:end_index]
-
-            # Project the sliced KB embeddings to the correct dimension for K/V heads
+            # Project the (potentially sliced) KB embeddings to the correct dimension for K/V heads
             kb_key_states_proj = self.kb_k_proj(kb_key_states_layer)
             kb_value_states_proj = self.kb_v_proj(kb_value_states_layer)
 
@@ -586,6 +612,13 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         # RMSNorm: match Llama/Phi-3 epsilon, dtype
         self.input_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=getattr(config, 'rms_norm_eps', 1e-6)).to(torch.float32)
         self.post_attention_layernorm = modeling_bitnet.BitNetRMSNorm(config.hidden_size, eps=getattr(config, 'rms_norm_eps', 1e-6)).to(torch.float32)
+        
+        # --- Task 2: LayerScale for Training Stability ---
+        self.use_layerscale = getattr(config, "use_layerscale", True)
+        if self.use_layerscale:
+            self.attn_layerscale = nn.Parameter(torch.ones(config.hidden_size))
+            self.mlp_layerscale = nn.Parameter(torch.ones(config.hidden_size))
+
         # Dropout for residual connections (after attn, after MLP)
         resid_pdrop = getattr(config, "resid_pdrop", 0.0)
         if hasattr(config, "enable_dropout") and not config.enable_dropout:
@@ -605,6 +638,9 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         if hasattr(self.mlp, 'reset_parameters'):
             self.mlp.reset_parameters()
         # RMSNorm layers: no learnable weights except scale, which is initialized in the RMSNorm class
+        if self.use_layerscale:
+            nn.init.constant_(self.attn_layerscale, 1.0)
+            nn.init.constant_(self.mlp_layerscale, 1.0)
 
     def forward(
         self,
@@ -647,12 +683,18 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             attention_save_loc=attention_save_loc,
             attention_file_base_name=attention_file_base_name,
         )
+        
+        if self.use_layerscale:
+            hidden_states = self.attn_layerscale * hidden_states
         hidden_states = residual + self.resid_dropout(hidden_states)
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states)
+
+        if self.use_layerscale:
+            hidden_states = self.mlp_layerscale * hidden_states
         hidden_states = residual + self.resid_dropout(hidden_states)
 
         outputs = (hidden_states,)
@@ -680,6 +722,15 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         self.vocab_size = config.vocab_size
         logger.info(f"Instantiating KBLaMBitNetModel with vocab_size={config.vocab_size}, hidden_size={config.hidden_size}")
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+
+        # --- Task 4: Efficient KB Projection (Shared Layer) ---
+        self.use_efficient_kb_proj = getattr(config, "use_efficient_kb_proj", False)
+        if self.use_efficient_kb_proj:
+            # This assumes the raw KB embedding dimension matches hidden_size.
+            # A more robust implementation might get this from the dataset config.
+            self.kb_input_proj = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+            logger.info("Using efficient KB projection mode.")
+
         # Dropout for embeddings
         embd_pdrop = getattr(config, "embd_pdrop", 0.0)
         if hasattr(config, "enable_dropout") and not config.enable_dropout:
@@ -707,6 +758,8 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
             if hasattr(layer, 'reset_parameters'):
                 layer.reset_parameters()
         # RMSNorm and rotary_emb: rely on their own init
+        if self.use_efficient_kb_proj:
+            nn.init.xavier_uniform_(self.kb_input_proj.weight)
 
     def get_input_embeddings(self):
         """
@@ -814,6 +867,15 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
         # Apply embedding dropout
         inputs_embeds = self.embd_dropout(inputs_embeds)
 
+        # --- Task 4: Efficient KB Projection (Forward Pass) ---
+        projected_kb_kvs = None
+        if kb_kvs is not None and self.use_efficient_kb_proj:
+            # Project raw KB embeddings once before the decoder stack
+            raw_kb_keys, raw_kb_values = kb_kvs
+            projected_keys = self.kb_input_proj(raw_kb_keys)
+            projected_values = self.kb_input_proj(raw_kb_values)
+            projected_kb_kvs = (projected_keys, projected_values)
+
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
         # 4d mask is passed through the layers
@@ -841,7 +903,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
                     past_key_value,
                     output_attentions,
                     use_cache,
-                    kb_kvs,
+                    projected_kb_kvs if self.use_efficient_kb_proj else kb_kvs, # Pass the correct KB tensor
                     kb_config,
                     position_embeddings,
                     save_attention_weights,
@@ -856,7 +918,7 @@ class KBLaMBitNetModel(modeling_bitnet.BitNetPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    kb_kvs=kb_kvs,
+                    kb_kvs=projected_kb_kvs if self.use_efficient_kb_proj else kb_kvs, # Pass the correct KB tensor
                     kb_config=kb_config,
                     position_embeddings=position_embeddings,
                     save_attention_weights=save_attention_weights,

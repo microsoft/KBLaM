@@ -28,7 +28,7 @@ from rich.theme import Theme
 from torch.optim import AdamW
 from torch.nn import CrossEntropyLoss
 from torch.nn.parallel import DistributedDataParallel
-from transformers import AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AutoTokenizer, get_linear_schedule_with_warmup, AutoConfig
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -75,9 +75,20 @@ parser.add_argument("--use_oai_embd", action="store_true", help="Use OpenAI embe
 parser.add_argument("--use_cached_embd", action="store_true", help="Choose to use pre-computed KV embeddings")
 parser.add_argument("--total_steps", type=int, default=20000, help="Total steps")
 parser.add_argument("--encoder_spec", type=str, default="OAI")
-parser.add_argument("--key_embd_src", type=str, default="key", choices=["key", "answer", "questions", None], help="Source of key embedding")
+parser.add_argument(
+    "--key_embd_src",
+    type=str,
+    default="key",
+    choices=["key", "answer", "questions", None],
+    help="Source for key embeddings ('key' or 'value')"
+)
 parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick templates for the question")
-parser.add_argument("--use_lr_decay", action="store_true")
+
+# --- New SOTA Improvement Flags ---
+parser.add_argument("--disable_layerscale", action="store_true", help="Disable LayerScale for training stability (not recommended)")
+parser.add_argument("--use_efficient_kb_proj", action="store_true", help="Enable parameter-efficient KB projection mode")
+parser.add_argument("--use_lr_decay", action="store_true", help="Enable learning rate decay")
+
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
 parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B-Instruct", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct", "microsoft/bitnet-b1.58-2B-4T-bf16"])
