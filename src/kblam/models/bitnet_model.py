@@ -301,22 +301,37 @@ class KBLaMBitNetMLP(nn.Module):
     """
     Feed-forward (MLP) block for BitNet, using squared ReLU activation.
     This is used in each decoder layer after self-attention.
+    Supports a standard MLP and an experimental gated (MoE-like) version.
     """
     def __init__(self, config: configuration_bitnet.BitNetConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
+        self.use_gated_mlp = getattr(config, "use_gated_mlp", False)
+        self.num_experts = getattr(config, "gated_mlp_num_experts", 4)
 
         act_fn_name = getattr(config, "activation_function", "swiglu")
         if act_fn_name == "swiglu":
             self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
             self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size * 2, bias=False)
-            self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         else:
             self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
             self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+
+        if self.use_gated_mlp:
+            logger.info(f"Using Gated MLP with {self.num_experts} experts.")
+            # Create a list of expert down_projs
+            self.down_proj_experts = nn.ModuleList(
+                [nn.Linear(self.intermediate_size, self.hidden_size, bias=False) for _ in range(self.num_experts)]
+            )
+            # Routing layer
+            self.router = nn.Linear(self.hidden_size, self.num_experts, bias=False)
+            self.down_proj = None # Not used in this mode
+        else:
             self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+            self.down_proj_experts = None
+            self.router = None
 
         # Select activation function
         if act_fn_name == "squared_relu":
@@ -352,18 +367,36 @@ class KBLaMBitNetMLP(nn.Module):
             nn.init.xavier_uniform_(self.gate_proj.weight)
             nn.init.xavier_uniform_(self.up_proj.weight)
 
-        # For the final projection layer in the MLP, a scaled normal init is often better
-        nn.init.normal_(self.down_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
+        if self.use_gated_mlp:
+            for expert_proj in self.down_proj_experts:
+                nn.init.normal_(expert_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
+            nn.init.xavier_uniform_(self.router.weight)
+        else:
+            # For the final projection layer in the MLP, a scaled normal init is often better
+            nn.init.normal_(self.down_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
 
         for module in [self.gate_proj, self.up_proj, self.down_proj]:
-            if module.bias is not None:
+            if module and module.bias is not None:
                 nn.init.zeros_(module.bias)
 
     def forward(self, x):
+        # Common up-projection part
         if getattr(self.config, "activation_function", "squared_relu") == "swiglu":
-            out = self.down_proj(self.act_fn(self.gate_proj(x) + self.up_proj(x)))
+            intermediate_states = self.act_fn(self.gate_proj(x) + self.up_proj(x))
         else:
-            out = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+            intermediate_states = self.act_fn(self.gate_proj(x)) * self.up_proj(x)
+
+        if self.use_gated_mlp:
+            # Route to experts
+            routing_weights = F.softmax(self.router(x), dim=-1) # (bsz, seq_len, num_experts)
+            expert_outputs = torch.stack([expert(intermediate_states) for expert in self.down_proj_experts], dim=-1) # (bsz, seq_len, hidden_size, num_experts)
+            
+            # Weighted sum of expert outputs
+            # (bsz, seq_len, 1, num_experts) * (bsz, seq_len, hidden_size, num_experts) -> sum over last dim
+            out = torch.sum(routing_weights.unsqueeze(-2) * expert_outputs, dim=-1)
+        else:
+            out = self.down_proj(intermediate_states)
+
         return self.mlp_dropout(out)
 
 
@@ -402,6 +435,20 @@ class KBLaMBitNetAttention(nn.Module):
         # Projection for KB embeddings
         self.kb_k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
         self.kb_v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
+        
+        # --- Task 1: Gated Attention ---
+        self.use_gated_attention = getattr(config, "use_gated_attention", False)
+        if self.use_gated_attention:
+            self.kb_fusion_gate = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+            logger.info(f"Layer {layer_idx}: Using experimental Gated Attention for KB fusion.")
+
+        # --- Task 2: Sinking Token ---
+        self.use_sinking_token = getattr(config, "use_sinking_token", True) # Enabled by default
+        if self.use_sinking_token:
+            self.sinking_key = nn.Parameter(torch.randn(1, self.num_key_value_heads, 1, self.head_dim))
+            self.sinking_value = nn.Parameter(torch.randn(1, self.num_key_value_heads, 1, self.head_dim))
+            logger.info(f"Layer {layer_idx}: Using Sinking Token for KB sparsification.")
+
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -415,6 +462,13 @@ class KBLaMBitNetAttention(nn.Module):
             if module.bias is not None:
                 nn.init.zeros_(module.bias)
         
+        if self.use_gated_attention:
+            nn.init.xavier_uniform_(self.kb_fusion_gate.weight)
+
+        if self.use_sinking_token:
+            nn.init.normal_(self.sinking_key, mean=0.0, std=0.02)
+            nn.init.normal_(self.sinking_value, mean=0.0, std=0.02)
+
         # Use a scaled normal distribution for the output projection, similar to GPT-2/3
         nn.init.normal_(self.o_proj.weight, mean=0.0, std=0.02 / torch.sqrt(torch.tensor(2 * self.config.num_hidden_layers, dtype=torch.float32)))
         if self.o_proj.bias is not None:
@@ -501,6 +555,14 @@ class KBLaMBitNetAttention(nn.Module):
                 bsz, num_kb_entries, self.num_key_value_heads, self.head_dim
             ).transpose(1, 2)
 
+            # --- Task 2: Sinking Token ---
+            if self.use_sinking_token:
+                # Prepend the sinking token to the KB entries for this batch
+                expanded_sinking_key = self.sinking_key.expand(bsz, -1, -1, -1)
+                expanded_sinking_value = self.sinking_value.expand(bsz, -1, -1, -1)
+                kb_key_states = torch.cat([expanded_sinking_key, kb_key_states], dim=2)
+                kb_value_states = torch.cat([expanded_sinking_value, kb_value_states], dim=2)
+
             kb_query_states = self.q_proj_new(hidden_states)
             kb_query_states = kb_query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
 
@@ -519,7 +581,9 @@ class KBLaMBitNetAttention(nn.Module):
             dynamic_sparsify = getattr(kb_config, "dynamic_sparsify", False)
             if dynamic_sparsify and kb_config.top_k_kb > 0:
                 kb_len = kb_key_states.shape[2]
-                topk = min(kb_len, kb_config.top_k_kb)
+                # Add 1 to topk if using sinking token to account for it
+                topk_val = kb_config.top_k_kb + 1 if self.use_sinking_token else kb_config.top_k_kb
+                topk = min(kb_len, topk_val)
                 if topk < kb_len:
                     # Sum attention weights across heads and query sequence length to get a score per KB entry
                     # (batch, heads, q_len, kb_len) -> (batch, kb_len)
@@ -536,7 +600,8 @@ class KBLaMBitNetAttention(nn.Module):
             elif kb_config.top_k_kb > 0:
                 # Legacy: prune only if top_k_kb is set, for backward compatibility
                 kb_len = kb_key_states.shape[2]
-                topk = min(kb_len, kb_config.top_k_kb)
+                topk_val = kb_config.top_k_kb + 1 if self.use_sinking_token else kb_config.top_k_kb
+                topk = min(kb_len, topk_val)
                 if topk < kb_len:
                     attn_scores = attn_weights_kb.sum(dim=(1, 2))
                     top_idx = attn_scores.topk(topk, dim=-1)[1]
@@ -558,20 +623,41 @@ class KBLaMBitNetAttention(nn.Module):
             if attention_mask is not None:
                 attn_weights_prompt = attn_weights_prompt + attention_mask
 
-            # Combine weights and apply softmax over all context (prompt + KB)
-            attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
-            # Numerical stability: always compute softmax in float32, then cast back
-            attn_weights = nn.functional.softmax(attn_weights.to(torch.float32), dim=-1).to(query_states.dtype)
+            # --- Task 1: Gated Attention ---
+            if self.use_gated_attention:
+                # Compute prompt and KB attention outputs separately
+                attn_weights_prompt_softmax = nn.functional.softmax(attn_weights_prompt.to(torch.float32), dim=-1).to(query_states.dtype)
+                attn_weights_kb_softmax = nn.functional.softmax(attn_weights_kb.to(torch.float32), dim=-1).to(query_states.dtype)
 
-            if save_attention_weights:
-                detached_weights = attn_weights_kb.detach().cpu().numpy()
-                save_path = os.path.join(attention_save_loc, f"{attention_file_base_name}_{self.layer_idx}.npy")
-                np.save(save_path, detached_weights)
+                attn_output_prompt = torch.matmul(attn_weights_prompt_softmax, value_states)
+                attn_output_kb = torch.matmul(attn_weights_kb_softmax, kb_value_states)
 
-            # The split in the original code is tricky. A single matmul after concatenating
-            # the value states is equivalent and less error-prone.
-            combined_value_states = torch.cat((kb_value_states, value_states), dim=2)
-            attn_output = torch.matmul(attn_weights, combined_value_states)
+                # Combine using a learned gate
+                gate = torch.sigmoid(self.kb_fusion_gate(hidden_states))
+                # Reshape gate for broadcasting: (bsz, q_len, hidden_size) -> (bsz, q_len, num_heads, head_dim) -> (bsz, num_heads, q_len, head_dim)
+                gate = gate.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+                
+                attn_output = gate * attn_output_kb + (1 - gate) * attn_output_prompt
+                
+                # For output, combine the softmaxed weights for potential analysis (optional)
+                attn_weights = torch.cat([attn_weights_kb_softmax, attn_weights_prompt_softmax], dim=-1)
+
+            else:
+                # Original approach: Combine weights and apply softmax over all context (prompt + KB)
+                attn_weights = torch.cat([attn_weights_kb, attn_weights_prompt], dim=-1)
+                # Numerical stability: always compute softmax in float32, then cast back
+                attn_weights = nn.functional.softmax(attn_weights.to(torch.float32), dim=-1).to(query_states.dtype)
+
+                if save_attention_weights:
+                    # Note: this now saves the combined weights, not just KB
+                    detached_weights = attn_weights.detach().cpu().numpy()
+                    save_path = os.path.join(attention_save_loc, f"{attention_file_base_name}_{self.layer_idx}.npy")
+                    np.save(save_path, detached_weights)
+
+                # The split in the original code is tricky. A single matmul after concatenating
+                # the value states is equivalent and less error-prone.
+                combined_value_states = torch.cat((kb_value_states, value_states), dim=2)
+                attn_output = torch.matmul(attn_weights, combined_value_states)
         else:
             # Standard attention if not a KB layer
             key_states = modeling_bitnet.repeat_kv(key_states, self.num_key_value_groups)
@@ -615,6 +701,7 @@ class KBLaMBitNetDecoderLayer(nn.Module):
         
         # --- Task 2: LayerScale for Training Stability ---
         self.use_layerscale = getattr(config, "use_layerscale", True)
+        self.layerscale_init_value = getattr(config, "layerscale_init_value", 1e-5) # Task 3
         if self.use_layerscale:
             self.attn_layerscale = nn.Parameter(torch.ones(config.hidden_size))
             self.mlp_layerscale = nn.Parameter(torch.ones(config.hidden_size))
@@ -639,8 +726,10 @@ class KBLaMBitNetDecoderLayer(nn.Module):
             self.mlp.reset_parameters()
         # RMSNorm layers: no learnable weights except scale, which is initialized in the RMSNorm class
         if self.use_layerscale:
-            nn.init.constant_(self.attn_layerscale, 1.0)
-            nn.init.constant_(self.mlp_layerscale, 1.0)
+            # --- Task 3: LayerScale Initialization ---
+            logger.info(f"Initializing LayerScale for layer {self.self_attn.layer_idx} with value: {self.layerscale_init_value}")
+            nn.init.constant_(self.attn_layerscale, self.layerscale_init_value)
+            nn.init.constant_(self.mlp_layerscale, self.layerscale_init_value)
 
     def forward(
         self,

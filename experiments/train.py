@@ -88,6 +88,12 @@ parser.add_argument("--use_data_aug", action="store_true", help="Randomly pick t
 parser.add_argument("--disable_layerscale", action="store_true", help="Disable LayerScale for training stability (not recommended)")
 parser.add_argument("--use_efficient_kb_proj", action="store_true", help="Enable parameter-efficient KB projection mode")
 parser.add_argument("--use_lr_decay", action="store_true", help="Enable learning rate decay")
+parser.add_argument("--use_gated_attention", action=argparse.BooleanOptionalAction, default=False, help="Use experimental Gated Attention for KB fusion.")
+parser.add_argument("--disable_sinking_token", action="store_true", help="Disable the Sinking Token for KB sparsification.")
+parser.add_argument("--layerscale_init_value", type=float, default=1e-5, help="Initial value for LayerScale parameters.")
+parser.add_argument("--use_gated_mlp", action=argparse.BooleanOptionalAction, default=False, help="Use experimental Gated MLP block.")
+parser.add_argument("--gated_mlp_num_experts", type=int, default=4, help="Number of experts for the Gated MLP.")
+
 
 parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
 parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
@@ -331,6 +337,14 @@ def get_prefix_str(args):
     lr = args.lr
 
     prefix_string = f"stage1_lr_{str(lr).replace('.', 'p')}"
+    if args.use_gated_attention:
+        prefix_string += "_GatedAttn"
+    if not args.disable_sinking_token:
+        prefix_string += "_SinkingToken"
+    if args.use_gated_mlp:
+        prefix_string += f"_GatedMLP{args.gated_mlp_num_experts}"
+    if args.layerscale_init_value != 1e-5:
+        prefix_string += f"_LSinit{str(args.layerscale_init_value)}"
     if kb_token_layer_frequency is not None:
         prefix_string += f"KBTokenLayerFreq{kb_token_layer_frequency}"
     if use_extended_qa:
@@ -990,7 +1004,8 @@ class Trainer:
                                 self.logger.debug(f"Param post-step (L0 q_proj): {param.abs().mean().item():.6f}")
                                 break
                     if losses:
-                        local_loss = torch.tensor(np.mean(losses), device=self.device)
+                        local_loss = torch.tensor(np.mean(losses), device=self.device
+                        )
                     else:
                         local_loss = torch.tensor(0.0, device=self.device)
                     all_losses = self.accelerator.gather(local_loss)
@@ -1112,6 +1127,12 @@ def main():
                 'gradient_accm_step': gradient_accm_step,
                 "encoder_spec": encoder_spec,
                 "max_seq_len": max_seq_len,
+                # SOTA Improvements
+                "use_gated_attention": args.use_gated_attention,
+                "use_sinking_token": not args.disable_sinking_token,
+                "layerscale_init_value": args.layerscale_init_value,
+                "use_gated_mlp": args.use_gated_mlp,
+                "gated_mlp_num_experts": args.gated_mlp_num_experts,
             },
         )
 
@@ -1230,6 +1251,12 @@ def main():
             kb_layer_frequency=kb_token_layer_frequency,
             kb_length_scaling=length_invariance,
             kb_max_train_triples=N,
+            # SOTA Improvements
+            use_gated_attention=args.use_gated_attention,
+            use_sinking_token=not args.disable_sinking_token,
+            layerscale_init_value=args.layerscale_init_value,
+            use_gated_mlp=args.use_gated_mlp,
+            gated_mlp_num_experts=args.gated_mlp_num_experts,
         )
 
     encoder.train()

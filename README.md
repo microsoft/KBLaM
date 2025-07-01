@@ -153,33 +153,37 @@ python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b
 
 | Flag                        | Description                                                                                  | Default Value         |
 |-----------------------------|----------------------------------------------------------------------------------------------|----------------------|
-| `classifier_dropout`        | Dropout probability for the classifier head (sequence/token classification).                  | `0.0` (sequence), `0.1` (token) |
-| `classifier_bias`           | Whether to use a bias term in the classifier head.                                           | `False`              |
-| `enable_dropout`            | Globally enable/disable all dropout (for ablation studies).                                  | `True` (if not set, dropout enabled) |
-| `activation_function`       | Activation function for MLP layers. Supported: `squared_relu`, `gelu`, `swiglu`.            | `"squared_relu"`     |
-| `mlp_pdrop`                 | Dropout probability after MLP layers.                                                        | `0.0`                |
-| `resid_pdrop`               | Dropout probability for residual connections (after attn/MLP).                               | `0.0`                |
-| `embd_pdrop`                | Dropout probability for input embeddings.                                                    | `0.0`                |
-| `kb_layer_frequency`        | How often to insert KB-augmented attention layers (every N layers).                          | (must be set in config) |
-| `dynamic_sparsify`          | Enable dynamic pruning of KB entries per layer (for efficiency).                             | `False`              |
-| `top_k_kb`                  | Number of KB entries to keep after pruning (if pruning enabled).                             | `0`                  |
-| `kb_length_scaling`         | Enable scaling of KB attention scores based on KB length (for generalization).               | `False`              |
-| `kb_max_train_triples`      | Maximum KB size seen during training (for length scaling).                                   | (must be set in config) |
-| `num_labels`                | Number of output labels for classification heads.                                            | `2`                  |
-| `hidden_size`               | Model hidden size (embedding dimension).                                                     | (from model config)  |
-| `num_attention_heads`       | Number of attention heads.                                                                   | (from model config)  |
-| `num_key_value_heads`       | Number of key/value heads (for GQA/MQA).                                                     | (from model config)  |
-| `max_position_embeddings`   | Maximum sequence length supported by the model.                                              | (from model config)  |
-| `rope_theta`                | Rotary embedding base (for position encoding).                                               | (from model config)  |
-| `rms_norm_eps`              | Epsilon for RMSNorm layers (for numerical stability).                                        | `1e-6`               |
-| `pad_token_id`              | Padding token ID.                                                                            | (from model config)  |
-| `problem_type`              | For classification heads: `regression`, `single_label_classification`, `multi_label_classification`. | `None` (auto-detect) |
-| `use_return_dict`           | Whether to return HuggingFace output objects or tuples.                                      | (from model config)  |
-| `output_attentions`         | Whether to return attention weights.                                                         | (from model config)  |
-| `output_hidden_states`      | Whether to return all hidden states.                                                         | (from model config)  |
-| `use_cache`                 | Whether to use key/value caching for fast decoding.                                          | (from model config)  |
-| `gradient_checkpointing`    | Enable gradient checkpointing for memory efficiency.                                         | `False`              |
-
+| `--classifier_dropout`        | Dropout probability for the classifier head (sequence/token classification).                  | `0.0` (sequence), `0.1` (token) |
+| `--classifier_bias`           | Whether to use a bias term in the classifier head.                                           | `False`              |
+| `--enable_dropout`            | Globally enable/disable all dropout (for ablation studies).                                  | `True` (if not set, dropout enabled) |
+| `--activation_function`       | Activation function for MLP layers. Supported: `squared_relu`, `gelu`, `swiglu`.            | `"squared_relu"`     |
+| `--mlp_pdrop`                 | Dropout probability after MLP layers.                                                        | `0.0`                |
+| `--resid_pdrop`               | Dropout probability for residual connections (after attn/MLP).                               | `0.0`                |
+| `--embd_pdrop`                | Dropout probability for input embeddings.                                                    | `0.0`                |
+| `--kb_layer_frequency`        | How often to insert KB-augmented attention layers (every N layers).                          | (must be set in config) |
+| `--dynamic_sparsify`          | Enable dynamic pruning of KB entries per layer (for efficiency).                             | `False`              |
+| `--top_k_kb`                  | Number of KB entries to keep after pruning (if pruning enabled).                             | `0`                  |
+| `--kb_length_scaling`         | Enable scaling of KB attention scores based on KB length (for generalization).               | `False`              |
+| `--kb_max_train_triples`      | Maximum KB size seen during training (for length scaling).                                   | (must be set in config) |
+| `--num_labels`                | Number of output labels for classification heads.                                            | `2`                  |
+| `--hidden_size`               | Model hidden size (embedding dimension).                                                     | (from model config)  |
+| `--num_attention_heads`       | Number of attention heads.                                                                   | (from model config)  |
+| `--num_key_value_heads`       | Number of key/value heads (for GQA/MQA).                                                     | (from model config)  |
+| `--max_position_embeddings`   | Maximum sequence length supported by the model.                                              | (from model config)  |
+| `--rope_theta`                | Rotary embedding base (for position encoding).                                               | (from model config)  |
+| `--rms_norm_eps`              | Epsilon for RMSNorm layers (for numerical stability).                                        | `1e-6`               |
+| `--pad_token_id`              | Padding token ID.                                                                            | (from model config)  |
+| `--problem_type`              | For classification heads: `regression`, `single_label_classification`, `multi_label_classification`. | `None` (auto-detect) |
+| `--use_return_dict`           | Whether to return HuggingFace output objects or tuples.                                      | (from model config)  |
+| `--output_attentions`         | Whether to return attention weights.                                                         | (from model config)  |
+| `--output_hidden_states`      | Whether to return all hidden states.                                                         | (from model config)  |
+| `--use_cache`                 | Whether to use key/value caching for fast decoding.                                          | (from model config)  |
+| `--gradient_checkpointing`    | Enable gradient checkpointing for memory efficiency.                                         | `False`              |
+| `--use_gated_attention`     | Enable experimental gated fusion of prompt and KB attention (learned blending).              | `False`              |
+| `--disable_sinking_token`   | Disable the learnable "sinking token" for KB sparsification (enabled by default).           | `False`              |
+| `--layerscale_init_value`   | Initial value for LayerScale parameters (improves training stability).                       | `1e-5`               |
+| `--use_gated_mlp`           | Enable experimental Gated MLP (MoE-like) block in the transformer.                           | `False`              |
+| `--gated_mlp_num_experts`   | Number of experts for the Gated MLP block (if enabled).                                      | `4`                  |
 </details>
 
 ## Evaluation
