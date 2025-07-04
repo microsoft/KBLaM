@@ -7,6 +7,7 @@ import transformers
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
 
 instruction_prompts = """
 Please answer questions based on the given text with format: "The {property} of {name} is {description}"
@@ -40,6 +41,16 @@ def _prune_for_phi3(S: str) -> str:
     return S
 
 
+def _prune_for_bitnet(S: str) -> str:
+    S = S.replace("<s>", "").replace("</s>", "")
+    # The model output contains the prompt, so we remove it.
+    assistant_marker = "ASSISTANT:"
+    marker_pos = S.find(assistant_marker)
+    if marker_pos != -1:
+        return S[marker_pos + len(assistant_marker) :].strip()
+    return S
+
+
 def softmax(x: np.array, axis: int) -> np.array:
     """Compute softmax values for each sets of scores in x."""
     e_x = np.exp(x - np.max(x))
@@ -56,25 +67,32 @@ def _format_Q_phi3(Q: str):
     return "<|user|>\n" + Q + "<|end|>\n" + "<|assistant|>\n"
 
 
+def _format_Q_bitnet(Q: str):
+    return f"USER: {Q} ASSISTANT:"
+
+
 model_question_format_mapping = {
     KblamLlamaForCausalLM: _format_Q_llama,
     KBLaMPhi3ForCausalLM: _format_Q_phi3,
+    KBLaMBitNetForCausalLM: _format_Q_bitnet,
 }
 model_prune_format_mapping = {
     KblamLlamaForCausalLM: _prune_for_llama,
     KBLaMPhi3ForCausalLM: _prune_for_phi3,
+    KBLaMBitNetForCausalLM: _prune_for_bitnet,
 }
 
 
 def answer_question(
     tokenizer: transformers.PreTrainedTokenizer,
-    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
+    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
     Q: str,
     kb=None,
     kb_config: Optional[KBLaMConfig] = None,
     attention_save_loc: Optional[str] = None,
     save_attention_weights: bool = False,
     attention_file_base_name: Optional[str] = None,
+    topk_size: int = -1,
 ):
     for m in model_question_format_mapping:
         if isinstance(model, m):
@@ -84,6 +102,9 @@ def answer_question(
         tokenizer_output["input_ids"],
         tokenizer_output["attention_mask"],
     )
+
+    if kb_config is not None and topk_size > -1:
+        kb_config.top_k_kb = topk_size
 
     with torch.autograd.no_grad():
         outputs = model.generate(

@@ -7,7 +7,7 @@ build-backend = "pdm.backend"
 
 [project]
 name = "kblam"
-version = "0.0.1"
+version = "0.0.2"
 description= "Knowledge Base augmented Language Model"
 
 readme = "README.md"
@@ -16,7 +16,7 @@ license = {text = "MIT"}
 dependencies = [
     "accelerate",
     "datasets==3.2.0",
-    "transformers==4.46.0",
+    "transformers==4.52.4",
     "torch",
     "sentence_transformers",
     "azure-ai-ml",
@@ -29,7 +29,7 @@ dependencies = [
     "evaluate",
     "nltk",
     "rouge-score",
-    "bert_score"
+    "bert_score",
 ]
 
 [dependency-groups]

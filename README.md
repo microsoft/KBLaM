@@ -4,22 +4,29 @@ This repo contains the official implementation of [KBLaM: Knowledge Base Augment
 
 Authors: Xi Wang, Liana Mikaelyan, Taketomo Isazawa, Mathew Salvaris, James Hensman.
 
-KBLaM is a new method for augmentating LLMs with external knowledge.
+KBLaM is a new method for augmentating LLMs with external knowledge. 
 Unlike Retrieval-Augmented Generation, KBLAM eliminates external
 retrieval modules, and unlike in-context learning, its computational overhead scales linearly with KB size rather than quadratically.
 
 ## Supported Models
-The following models from Hugging Face hub are currently supported:
 
-- [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
-- [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
-- [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
+The following models from Hugging Face hub are currently supported:
+ - [meta-llama/Meta-Llama-3-8B-Instruct](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct)
+ - [meta-llama/Llama-3.2-1B-Instruct](https://huggingface.co/meta-llama/Llama-3.2-1B-Instruct)
+ - [Phi-3-mini-4k-instruct](https://huggingface.co/microsoft/Phi-3-mini-4k-instruct)
+ - [microsoft/bitnet-b1.58-2B-4T-bf16](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T-bf16)
 
 To add support for new model types, you will need to update the model processing scripts to incorporate an adapter similar to `llama_model.py` in `src/kblam/models`.
 
 ## Setting up
 
-Install the kblam package with
+Create and activate a Conda environment:
+```bash
+conda create -n kblam python=3.10.0
+conda activate kblam
+```
+
+Install the kblam package with 
 
 ```
 pip install -e .
@@ -34,11 +41,16 @@ huggingface-cli login
 
 The experiments in the paper can be replicated by running the scripts in `./experiments`.
 
+
 ## Dataset Construction
 
-To run the synthetic dataset construction, you will need a valid Azure OpenAI endpoint.
+The dataset construction process involves two main steps.
 
-To construct a synthetic KB and question-answer pairs use `dataset_generation/gen_synthetic_data.py`
+### Step 1: Constructing the Dataset (Optional)
+
+This step involves creating a new synthetic dataset from scratch.
+
+To construct a synthetic KB and question-answer pairs, use `dataset_generation/gen_synthetic_data.py`. 
 
 The question-answer pairs are constructed in the form:
 
@@ -47,19 +59,102 @@ What is the description of {entity_name}?
 The description of {entity_name} is {description}.
 ```
 
-To generate KB embeddings, use `dataset_generation/generate_kb_embeddings.py`.
-The embeddings we current support are [text-embedding-ada-002](https://openai.com/index/new-and-improved-embedding-model/) and [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
+**Alternatively, you can skip this step** and use the pre-generated datasets provided in the `datasets/` directory (`synthetic.json` or `enron.json`).
+
+### Step 2: Generating KB Embeddings (Required)
+
+This step takes a dataset file (e.g., `synthetic.json`) and generates the knowledge base embeddings required for training. You have two options for this process: using a paid OpenAI service or a free, local model.
+
+#### Option A: OpenAI Embeddings (Paid)
+
+This option uses the `text-embedding-ada-002` model via an Azure OpenAI endpoint. It is generally faster but will incur costs.
+
+```bash
+python dataset_generation/generate_kb_embeddings.py --model_name "ada-embeddings" --dataset_path "./datasets/synthetic.json" --dataset_name "synthetic" --endpoint_url "YOUR_AZURE_OPENAI_ENDPOINT" --output_path "./datasets"
+```
+- `--dataset_path`: Path to the input dataset file (e.g., `datasets/synthetic.json`).
+- `--dataset_name`: A prefix for the output embedding files. The script will generate files like `synthetic_OAI_embd_key.npy`.
+- `--endpoint_url`: **Required.** Your Azure OpenAI endpoint URL.
+
+#### Option B: Local Sentence Transformer (Free)
+
+This option uses the `all-MiniLM-L6-v2` model, which runs on your local machine. It is free but may be slower, especially without a GPU.
+
+```bash
+python dataset_generation/generate_kb_embeddings.py --model_name "all-MiniLM-L6-v2" --dataset_path "./datasets/synthetic.json" --dataset_name "synthetic" --output_path "./datasets"
+```
+- `--dataset_path`: Path to the input dataset file (e.g., `datasets/synthetic.json`).
+- `--dataset_name`: A prefix for the output embedding files. The script will generate files like `synthetic_all-MiniLM-L6-v2_embd_key.npy`.
+
 
 ## Training
 
-As an example of model training, see the following:
+To train a model, run the `train.py` script with the desired arguments. The `--llm_type` argument specifies the base model architecture, and the `--encoder_spec` argument must match the model used to generate your KB embeddings in Step 2.
 
-```
-python train.py --dataset_dir <Your dataset directory> --train_dataset synthetic --N 120000 --B 20 --total_steps 601  --encoder_spec OAI --use_oai_embd --key_embd_src key --use_data_aug --use_cached_embed
-```
+Note in particular the `--use_cached_embed` argument. This should be set to prevent recomputation of embeddings, which can take significant time especially when using APIs such as OpenAI's text embeddings.More actions
 
-Note in particular the `--use_cached_embed` argument. This should be set to prevent recomputation of embeddings, which can take significant time especially when using APIs such as OpenAI's text embeddings.
 There are a number of optional arguments in `train.py` that you may want to consult.
+
+### LLaMA-3 Examples
+
+**Training with OpenAI Embeddings:**
+```bash
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type llama3 --hf_model_spec meta-llama/Llama-3.2-1B-Instruct --hf_token YOUR_HF_TOKEN --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+### Phi-3 Examples
+
+**Training with OpenAI Embeddings:**
+```bash
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type phi3 --hf_model_spec microsoft/Phi-3-mini-4k-instruct --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+### BitNet Examples
+
+**Training with OpenAI Embeddings:**
+```bash
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec OAI --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+**Training with Local Sentence Transformer Embeddings:**
+```bash
+python experiments/train.py --llm_type bitnet --hf_model_spec microsoft/bitnet-b1.58-2B-4T-bf16 --dataset_dir ./datasets --train_dataset synthetic --N 120000 --B 10 --total_steps 601 --encoder_spec all-MiniLM-L6-v2 --use_cached_embd --key_embd_src key --use_data_aug
+```
+
+## Evaluation
+
+To evaluate a trained model, use the `eval.py` script. You can evaluate generation quality, accuracy, and refusal.
+
+The `--model_dir` and `--encoder_dir` arguments should point to the checkpoint directories created during the training step. For example, if your training script saved a model to `output/my_bitnet_model_step_601` and an encoder to `output/my_bitnet_model_step_601_encoder`, you would use those paths.
+
+The examples below show how to evaluate for generation quality. The command structure is similar for other evaluation types like `accuracy` and `refusal`.
+
+### LLaMA-3 Example
+
+**Note:** You must provide a Hugging Face token to evaluate LLaMA models.
+```bash
+python experiments/eval.py generation --llm_type llama3 --llm_base_dir meta-llama/Llama-3.2-1B-Instruct --model_dir path/to/your/llama3/checkpoint --encoder_dir path/to/your/llama3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --hf_token YOUR_HF_TOKEN --encoder_spec OAI --topk_size 20
+```
+
+### Phi-3 Example
+```bash
+python experiments/eval.py generation --llm_type phi3 --llm_base_dir microsoft/Phi-3-mini-4k-instruct  --model_dir path/to/your/phi3/checkpoint --encoder_dir path/to/your/phi3/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --encoder_spec OAI --topk_size 20
+```
+
+### BitNet Example
+```bash
+python experiments/eval.py generation --llm_type bitnet --llm_base_dir microsoft/bitnet-b1.58-2B-4T-bf16 --model_dir path/to/your/bitnet/checkpoint --encoder_dir path/to/your/bitnet/encoder --dataset_dir ./datasets --test_dataset synthetic.json --kb_size 200 --encoder_spec all-MiniLM-L6-v2 --topk_size 20
+```
 
 ## Contributing
 

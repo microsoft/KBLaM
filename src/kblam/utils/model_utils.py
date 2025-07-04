@@ -1,5 +1,6 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from kblam.models.bitnet_model import BitNetForCausalLM
 from kblam.models.kblam_processor import EncoderArgs, KBLaMProcessor
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
@@ -22,13 +23,22 @@ def load_model_and_processor(
             torch_dtype="auto",
             trust_remote_code=True,
         ).bfloat16()
-    else:
+    elif "phi3" in model_path:
         model = KBLaMPhi3ForCausalLM.from_pretrained(
             model_path,
             device_map="cuda",
             torch_dtype="auto",
             trust_remote_code=True,
         ).bfloat16()
+    elif "bitnet" in model_path:
+        model = BitNetForCausalLM.from_pretrained(
+            model_path,
+            device_map="cuda",
+            torch_dtype="auto",
+            trust_remote_code=True,
+        ).bfloat16()
+    else:
+        raise ValueError(f"Unsupported model type in model_path: {model_path}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
 
     args = EncoderArgs(
