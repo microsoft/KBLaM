@@ -6,10 +6,12 @@ import evaluate
 from pathlib import Path
 
 from kblam.kb_encoder import KBEncoder
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 from kblam.utils.eval_utils import (
     _format_Q_llama,
     _format_Q_phi3,
     _format_Q_bitnet,
+    _format_Q_gemma3n,
     model_prune_format_mapping,
     softmax,
 )
@@ -113,7 +115,7 @@ def eval_standard(args):
             kb_embedding_key, kb_embedding_val = kb_embedding_real
             kb_embedding_real = (kb_embedding_key, kb_embedding_val)
 
-        format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet}
+        format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet, "gemma3n": _format_Q_gemma3n}
 
         input_strs = [
             format_func_map[llm_type](dataset_subset[i]["Q"])

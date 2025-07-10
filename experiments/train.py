@@ -9,13 +9,15 @@ import wandb
 from accelerate import Accelerator
 from rich.logging import RichHandler
 
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, Gemma3nConfig, AutoConfig
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
+
 
 from train.args import parse_args
 from train.config import get_prefix_str
@@ -184,64 +186,89 @@ def main():
     )
     tokenizer.pad_token = tokenizer.eos_token
 
-    if args.llm_type == "llama3":
-        model = KblamLlamaForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            #token=hf_token,
-        )
-    elif args.llm_type == "phi3":
-        model = KBLaMPhi3ForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype="auto",
-            trust_remote_code=True,
-        )
-    elif args.llm_type == "bitnet":
-        model = KBLaMBitNetForCausalLM.from_pretrained(
-            llm_model_spec,
-            device_map=device,
-            torch_dtype=torch.bfloat16, # BitNet uses bfloat16
-            trust_remote_code=True,
-        )
+    # === Consolidated and Corrected Initialization Logic ===
+
+    # 1. Get model dimensions from the correct config first
+    if llm_type == "gemma3n":
+        # For gemma3n, the text_config is nested
+        model_config = Gemma3nConfig.from_pretrained(hf_model_spec)
+        hidden_size = model_config.text_config.hidden_size
+        num_hidden_layers = model_config.text_config.num_hidden_layers
     else:
-        raise ValueError(f"LLM type {args.llm_type} not recognised")
+        # For all other models, load the standard config
+        model_config = AutoConfig.from_pretrained(hf_model_spec, trust_remote_code=True)
+        hidden_size = model_config.hidden_size
+        num_hidden_layers = model_config.num_hidden_layers
 
-    logger.info(model.config)  # type: ignore
-
-    model.eval()  # type: ignore
-    # freeze model
-    for _, param in model.named_parameters():  # type: ignore
-        param.requires_grad = False
-
-    # Set up the encoder
+    # 2. Initialize the KBEncoder with the correct dimensions
     encoder = KBEncoder(
         encoder_name=encoder_spec,
         projector_type="linear",
         endpoint_url="",
-        out_dim=model.config.hidden_size  # type: ignore
-        * (model.config.num_hidden_layers // kb_token_layer_frequency + 1),  # type: ignore
-        frozen_base_model=True,
+        out_dim=hidden_size * (num_hidden_layers // kb_token_layer_frequency + 1),
+        frozen_base_model=False,
         device=device,
     )
 
-    if model_dir_to_resume:
+    # 3. Create the appropriate model and its config
+    if not model_dir_to_resume:
+        if args.llm_type == "llama3":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KblamLlamaForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "phi3":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KBLaMPhi3ForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype="auto", trust_remote_code=True)
+        elif args.llm_type == "bitnet":
+            kb_config = KBLaMConfig(sep_query_head=sep_query_head, kb_layer_frequency=kb_token_layer_frequency, kb_length_scaling=length_invariance, kb_max_train_triples=N)
+            model = KBLaMBitNetForCausalLM.from_pretrained(llm_model_spec, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "gemma3n":
+            # The new model architecture uses the standard KBLaMConfig,
+            # simplifying initialization and aligning it with other models.
+            kb_config = KBLaMConfig(
+                base_model_name_or_path=hf_model_spec,
+                sep_query_head=sep_query_head, 
+                kb_layer_frequency=kb_token_layer_frequency, 
+                kb_length_scaling=length_invariance, 
+                kb_max_train_triples=N,
+                torch_dtype=torch.bfloat16
+            )
+            
+            model = KblamGemma3nForConditionalGeneration(kb_config)
+            model.to(device) # Ensure model is on the correct device
+            # Freezing is now handled inside the model's post_init or can be done here if needed.
+            # model.freeze_backbone() # This method may need to be implemented in the new model if required.
+        else:
+            raise ValueError(f"LLM type {args.llm_type} not recognised")
+    else:
+        # Resuming from a checkpoint
         encoder_dir = model_dir_to_resume + "_encoder"
         encoder.load_state_dict(torch.load(os.path.join(encoder_dir, "encoder.pt")))
-        if args.llm_type == "bitnet":
-            config_path = os.path.join(model_dir_to_resume, "kb_config_explicit.json")
+        kb_config = AutoConfig.from_pretrained(model_dir_to_resume, trust_remote_code=True)
+        if args.llm_type == "llama3":
+            model = KblamLlamaForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "phi3":
+            model = KBLaMPhi3ForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype="auto", trust_remote_code=True)
+        elif args.llm_type == "bitnet":
+            model = KBLaMBitNetForCausalLM.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+        elif args.llm_type == "gemma3n":
+            model = KblamGemma3nForConditionalGeneration.from_pretrained(model_dir_to_resume, device_map=device, torch_dtype=torch.bfloat16, trust_remote_code=True)
+            model.freeze_backbone()
         else:
-            config_path = os.path.join(model_dir_to_resume, "kb_config.json")
-        kb_config = KBLaMConfig.from_pretrained(config_path)
-    else:
-        kb_config = KBLaMConfig(
-            sep_query_head=sep_query_head,
-            kb_layer_frequency=kb_token_layer_frequency,
-            kb_length_scaling=length_invariance,
-            kb_max_train_triples=N,
-        )
+            raise ValueError(f"LLM type {args.llm_type} not recognised")
+
+
+    logger.info(model.config)  # type: ignore
+
+    model.eval()  # type: ignore
+    # For other models, freeze all parameters (legacy behavior)
+    if args.llm_type != "gemma3n":
+        for _, param in model.named_parameters():  # type: ignore
+            param.requires_grad = False
+
+    # For all models, unfreeze all trainable parameters (KB-specific modules)
+    # This ensures consistency and fixes the grad_fn error.
+    if hasattr(model, "unfreeze_all"):
+        model.unfreeze_all()
 
     encoder.train()
 
@@ -256,6 +283,19 @@ def main():
 
     # Get the training started
     llm_ckpt_name = f"{prefix_string}KeyFrom{key_embd_src}_{encoder_spec}_{dataset_name}_{llm_type}"
+
+    # --- GEMMA3N: Save processor/preprocessor configs to correct model subdir ---
+    if args.llm_type == "gemma3n":
+        # Save into the same directory as the model weights/checkpoints
+        model_output_dir = os.path.join(model_save_dir, llm_ckpt_name)
+        pathlib.Path(model_output_dir).mkdir(parents=True, exist_ok=True)
+        from transformers import AutoProcessor
+        try:
+            processor = AutoProcessor.from_pretrained(hf_model_spec, trust_remote_code=True)
+            processor.save_pretrained(model_output_dir)
+            logger.info(f"Saved processor/preprocessor config to {model_output_dir}.")
+        except Exception as e:
+            logger.warning(f"Could not save processor/preprocessor config: {e}")
 
     trainer = Trainer(
         model,  # type: ignore

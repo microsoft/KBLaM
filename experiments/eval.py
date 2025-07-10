@@ -35,6 +35,7 @@ def main():
         eval_standard(args)
     else:
         raise ValueError(f"command {args.command} not recognised")
+    print("Evaluation complete.")
 
 
 if __name__ == "__main__":

@@ -8,16 +8,18 @@ from tqdm import tqdm
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
+from kblam.models.gemma3n_config import Gemma3nConfig
 from kblam.utils.eval_utils import answer_question
 
 from .retriever import KBRetriever
 from .models import _prepare_models
 
 def perform_eval_refusal(
-    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM,
+    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KblamGemma3nForConditionalGeneration,
     tokenizer: transformers.PreTrainedTokenizer,
     kb_retriever: KBRetriever,
-    kb_config: KBLaMConfig | None = None,
+    kb_config: KBLaMConfig | Gemma3nConfig | None = None,
     eval_mode: str = "kb",
     kb_size: int = 250,
     seed: int = 1,
@@ -32,10 +34,10 @@ def perform_eval_refusal(
     It then checks if the model correctly identifies the outliers and refuses to answer.
 
     Args:
-        model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM): The language model to evaluate.
+        model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KblamGemma3nForConditionalGeneration): The language model to evaluate.
         tokenizer (transformers.PreTrainedTokenizer): The tokenizer for the model.
         kb_retriever (KBRetriever): The knowledge base retriever.
-        kb_config (KBLaMConfig, optional): The configuration for the knowledge base. Defaults to None.
+        kb_config (KBLaMConfig | Gemma3nConfig, optional): The configuration for the knowledge base. Defaults to None.
         eval_mode (str, optional): The evaluation mode ('kb', 'icl', 'zeroshot'). Defaults to "kb".
         kb_size (int, optional): The size of the knowledge base. Defaults to 250.
         seed (int, optional): The random seed. Defaults to 1.

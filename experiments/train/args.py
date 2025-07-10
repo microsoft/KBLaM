@@ -26,7 +26,19 @@ def parse_args():
     parser.add_argument("--use_lr_decay", action="store_true")
     parser.add_argument("--dataset_dir", type=str, default="synthetic_data")
     parser.add_argument("--model_dir_to_resume", type=str, default=None, help="Checkpoint directory to resume training")
-    parser.add_argument("--hf_model_spec", type=str, default="meta-llama/Llama-3.2-1B-Instruct", choices=["meta-llama/Meta-Llama-3-8B-Instruct", "microsoft/Phi-3-mini-4k-instruct", "meta-llama/Llama-3.2-1B-Instruct", "microsoft/bitnet-b1.58-2B-4T-bf16"])
+    parser.add_argument(
+        "--hf_model_spec",
+        type=str,
+        default="meta-llama/Llama-3.2-1B-Instruct",
+        choices=[
+            "meta-llama/Meta-Llama-3-8B-Instruct",
+            "microsoft/Phi-3-mini-4k-instruct",
+            "meta-llama/Llama-3.2-1B-Instruct",
+            "microsoft/bitnet-b1.58-2B-4T-bf16",
+            "google/gemma-3n-E2B",
+            "google/gemma-3n-E4B",
+        ]
+    )
     parser.add_argument("--hf_token", type=str,default=None,help="Huggingface token")
     parser.add_argument("--model_save_dir", type=str, default="output", help="Place to save the checkpoints")
     parser.add_argument("--kb_size", type=int, default=None, help="The size of the KB set size")
@@ -40,7 +52,7 @@ def parse_args():
     parser.add_argument("--gradient_accm_step", type=int, default=20, help="Introduce QA with extended open-ended parts")
     parser.add_argument("--verbose", action="store_true", help="Set logging to debug")
     parser.add_argument("--log_to_file", action="store_true", help="Log to file as well as stdout")
-    parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet"])
+    parser.add_argument("--llm_type",type=str,default="llama3",choices=["llama3", "phi3", "bitnet", "gemma3n"])
     parser.add_argument("--max_seq_len", type=int, default=None, help="Maximum sequence length")
     parser.add_argument("--save_period", type=int, default=100, help="Steps between checkpoints")
     return parser.parse_args()

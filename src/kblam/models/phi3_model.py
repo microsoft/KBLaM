@@ -45,6 +45,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
+from transformers.generation import GenerationMixin
 
 from kblam.models.kblam_config import KBLaMConfig
 
@@ -978,7 +979,7 @@ class Phi3Model(Phi3PreTrainedModel):
         )
 
 
-class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel):
+class KBLaMPhi3ForCausalLM(Phi3PreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     # Copied from transformers.models.llama.modeling_llama.LlamaForCausalLM.__init__ with Llama->Phi3

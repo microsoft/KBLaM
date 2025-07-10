@@ -54,6 +54,7 @@ from transformers.utils import (
 )
 
 from kblam.models.kblam_config import KBLaMConfig
+from transformers.generation import GenerationMixin
 
 logger = logging.get_logger(__name__)
 
@@ -762,7 +763,7 @@ class LlamaModel(LlamaPreTrainedModel):
         return causal_mask
 
 
-class KblamLlamaForCausalLM(LlamaPreTrainedModel):
+class KblamLlamaForCausalLM(LlamaPreTrainedModel, GenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config: LlamaConfig):

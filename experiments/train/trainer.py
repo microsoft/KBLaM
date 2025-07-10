@@ -19,18 +19,22 @@ from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
+from kblam.models.gemma3n_config import Gemma3nConfig
 
 from .retriever import KBRetriever
 from .batching import get_batch
 from .data_formatting import (
     _format_QA_phi3, _create_labels_for_phi3,
     _format_QA_llama, _create_labels_for_llama,
-    _format_QA_bitnet, _create_labels_for_bitnet
+    _format_QA_bitnet, _create_labels_for_bitnet,
+    _format_QA_gemma3n, _create_labels_for_gemma3n
 )
 from .params import (
     _get_phi3_query_head_parameters,
     _get_llama3_query_head_parameters,
-    _get_bitnet_query_head_parameters
+    _get_bitnet_query_head_parameters,
+    _get_gemma3n_query_head_parameters
 )
 from .config import get_step_config
 from .ui import create_custom_progress_bar, console
@@ -64,7 +68,7 @@ class Trainer:
     """
     def __init__(
         self,
-        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
+        llm_model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | KblamGemma3nForConditionalGeneration,
         kbretriever: KBRetriever,
         tokenizer: transformers.PreTrainedTokenizer,
         kb_token_layer_frequency: int,
@@ -82,7 +86,7 @@ class Trainer:
         """Initializes the Trainer.
 
         Args:
-            llm_model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM): The language model.
+            llm_model (KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | KblamGemma3nForConditionalGeneration): The language model.
             kbretriever (KBRetriever): The knowledge base retriever.
             tokenizer (transformers.PreTrainedTokenizer): The tokenizer.
             kb_token_layer_frequency (int): The frequency of KB token layers.
@@ -126,6 +130,9 @@ class Trainer:
         elif isinstance(llm_model, KBLaMBitNetForCausalLM):
             self._get_batch = partial(get_batch, _format_QA_bitnet, _create_labels_for_bitnet)
             self._get_params = _get_bitnet_query_head_parameters
+        elif isinstance(llm_model, KblamGemma3nForConditionalGeneration):
+            self._get_batch = partial(get_batch, _format_QA_gemma3n, _create_labels_for_gemma3n)
+            self._get_params = _get_gemma3n_query_head_parameters
         else:
             raise ValueError(f"{llm_model} not recognised")
 
@@ -145,50 +152,41 @@ class Trainer:
         Returns:
             tuple: A tuple containing the scheduler and optimizer.
         """
-        # --- BitNet KBLaM: Freeze all backbone params, unfreeze only query head(s) ---
-        # 1. Freeze all model params
-        for name, param in self.model.named_parameters():
-            param.requires_grad = False
-        # 2. Unfreeze only the query head(s) at the correct layer frequency
-        llm_q_params = []
-        for name, param in self.model.named_parameters():
-            if "q_proj_new.weight" in name:
-                import re
-                m = re.search(r"layers\.(\d+)\.self_attn\.q_proj_new\.weight", name)
-                if m:
-                    layer_idx = int(m.group(1))
-                    if layer_idx % self.kb_token_layer_frequency == 0:
-                        param.requires_grad = True
-                        llm_q_params.append(param)
-        # 3. Always train the encoder
+        # --- Refactored Optimizer Setup for All Models ---
+        # 1. Get trainable parameters from the model (KBLaM modules)
+        model_params_to_train = []
+        if hasattr(self.model, 'get_trainable_parameters'):
+            model_params_to_train = list(self.model.get_trainable_parameters())
+            for p in model_params_to_train:
+                p.requires_grad = True
+
+        # 2. Always train the encoder
         encoder_params = list(self.kbretriever.encoder.parameters())
         for p in encoder_params:
             p.requires_grad = True
-        # 4. Log which params are trainable
-        trainable_names = [n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters()) if p.requires_grad]
-        self.logger.info(f"[BITNET] Trainable parameters: {trainable_names}")
-        # 5. Construct optimizer
-        from itertools import chain
-        params_to_train = list(chain(encoder_params, llm_q_params))
-        param_id_map = {id(p): n for n, p in list(self.model.named_parameters()) + list(self.kbretriever.encoder.named_parameters())}
-        for p in params_to_train:
-            pname = param_id_map.get(id(p), None)
-            self.logger.debug(f"[BITNET] Optimizer param: {pname}, id={id(p)}, shape={getattr(p, 'shape', None)}, dtype={getattr(p, 'dtype', None)}, device={getattr(p, 'device', None)}")
-        self.logger.info("Using torch.optim.AdamW optimizer for all models (including BitNet). Only query head(s) and encoder are trainable.")
-        optim = AdamW(params_to_train, lr=self.lr)
-        self.logger.info("Optimizer recreated")
 
-        # --- Linear LR decay with warmup for BitNet (faithful to Llama/Phi3) ---
+        # 3. Combine trainable parameters
+        params_to_train = list(chain(model_params_to_train, encoder_params))
+
+        # 4. Log trainable parameters
+        trainable_names = [n for n, p in self.model.named_parameters() if p.requires_grad]
+        trainable_names += [n for n, p in self.kbretriever.encoder.named_parameters() if p.requires_grad]
+        self.logger.info(f"Trainable parameters: {trainable_names}")
+
+        # 5. Construct optimizer
+        optim = AdamW(params_to_train, lr=self.lr)
+        self.logger.info("Optimizer created for all trainable parameters.")
+
+        # --- Linear LR decay with warmup ---
         scheduler = None
         if self.use_lr_decay:
-            from transformers import get_linear_schedule_with_warmup
-            num_warmup_steps = int(0.06 * self.num_steps)  # 6% of total steps, as in Llama/Phi3
+            num_warmup_steps = int(0.06 * self.num_steps)
             scheduler = get_linear_schedule_with_warmup(
                 optim,
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=self.num_steps,
             )
-            self.logger.info(f"[BITNET] Using linear LR scheduler with {num_warmup_steps} warmup steps and {self.num_steps} total steps.")
+            self.logger.info(f"Using linear LR scheduler with {num_warmup_steps} warmup steps.")
         return scheduler, optim
 
     def train(
@@ -202,7 +200,7 @@ class Trainer:
         use_extended_qa: bool = False,
         save_period: int = 100,
         resumed_step: int = 0,
-        kb_config: KBLaMConfig = None,
+        kb_config: KBLaMConfig | Gemma3nConfig = None,
     ):
         """Runs the training loop.
 
@@ -220,7 +218,7 @@ class Trainer:
             use_extended_qa (bool, optional): Whether to use extended Q&A pairs. Defaults to False.
             save_period (int, optional): The period for saving checkpoints. Defaults to 100.
             resumed_step (int, optional): The step to resume training from. Defaults to 0.
-            kb_config (KBLaMConfig, optional): The configuration for the knowledge base. Defaults to None.
+            kb_config (KBLaMConfig | Gemma3nConfig, optional): The configuration for the knowledge base. Defaults to None.
         """
         train_losses = []
         start_step = resumed_step

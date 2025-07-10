@@ -3,11 +3,13 @@ from typing import Optional
 import numpy as np
 import torch
 import transformers
+from transformers import Gemma3nConfig
 
 from kblam.models.kblam_config import KBLaMConfig
 from kblam.models.llama3_model import KblamLlamaForCausalLM
 from kblam.models.phi3_model import KBLaMPhi3ForCausalLM
 from kblam.models.bitnet_model import KBLaMBitNetForCausalLM
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
 
 instruction_prompts = """
 Please answer questions based on the given text with format: "The {property} of {name} is {description}"
@@ -51,6 +53,16 @@ def _prune_for_bitnet(S: str) -> str:
     return S
 
 
+def _prune_for_gemma3n(S: str) -> str:
+    S = S.replace("<s>", "").replace("</s>", "")
+    # The model output contains the prompt, so we remove it.
+    assistant_marker = "ASSISTANT:"
+    marker_pos = S.find(assistant_marker)
+    if marker_pos != -1:
+        return S[marker_pos + len(assistant_marker) :].strip()
+    return S
+
+
 def softmax(x: np.array, axis: int) -> np.array:
     """Compute softmax values for each sets of scores in x."""
     e_x = np.exp(x - np.max(x))
@@ -71,24 +83,30 @@ def _format_Q_bitnet(Q: str):
     return f"USER: {Q} ASSISTANT:"
 
 
+def _format_Q_gemma3n(Q: str):
+    return f"USER: {Q} ASSISTANT:"
+
+
 model_question_format_mapping = {
     KblamLlamaForCausalLM: _format_Q_llama,
     KBLaMPhi3ForCausalLM: _format_Q_phi3,
     KBLaMBitNetForCausalLM: _format_Q_bitnet,
+    KblamGemma3nForConditionalGeneration: _format_Q_gemma3n,
 }
 model_prune_format_mapping = {
     KblamLlamaForCausalLM: _prune_for_llama,
     KBLaMPhi3ForCausalLM: _prune_for_phi3,
     KBLaMBitNetForCausalLM: _prune_for_bitnet,
+    KblamGemma3nForConditionalGeneration: _prune_for_gemma3n,
 }
 
 
 def answer_question(
     tokenizer: transformers.PreTrainedTokenizer,
-    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM,
+    model: KBLaMPhi3ForCausalLM | KblamLlamaForCausalLM | KBLaMBitNetForCausalLM | KblamGemma3nForConditionalGeneration,
     Q: str,
     kb=None,
-    kb_config: Optional[KBLaMConfig] = None,
+    kb_config: Optional[KBLaMConfig | Gemma3nConfig] = None,
     attention_save_loc: Optional[str] = None,
     save_attention_weights: bool = False,
     attention_file_base_name: Optional[str] = None,
@@ -107,19 +125,33 @@ def answer_question(
         kb_config.top_k_kb = topk_size
 
     with torch.autograd.no_grad():
-        outputs = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_masks,
-            kb_kvs=kb,
-            max_new_tokens=150,
-            tokenizer=tokenizer,
-            output_attentions=True,
-            kb_config=kb_config,
-            pad_token_id=tokenizer.eos_token_id,
-            save_attention_weights=save_attention_weights,
-            attention_file_base_name=attention_file_base_name,
-            attention_save_loc=attention_save_loc,
-        ).squeeze()
+        # Set pad_token_id logic for each model type
+        if isinstance(model, (KblamLlamaForCausalLM, KBLaMPhi3ForCausalLM, KBLaMBitNetForCausalLM)):
+            pad_token_id = tokenizer.eos_token_id
+        elif isinstance(model, KblamGemma3nForConditionalGeneration):
+            pad_token_id = tokenizer.pad_token_id
+        else:
+            pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+        generate_kwargs = {
+            "input_ids": input_ids,
+            "attention_mask": attention_masks,
+            "kb_kvs": kb,
+            "max_new_tokens": 150,
+            "tokenizer": tokenizer,
+            "output_attentions": True,
+            "kb_config": kb_config,
+            "pad_token_id": pad_token_id,
+            "save_attention_weights": save_attention_weights,
+            "attention_file_base_name": attention_file_base_name,
+            "attention_save_loc": attention_save_loc,
+        }
+        # The generate method in some models might not accept all these arguments.
+        # We can filter them based on the model's generate method signature.
+        import inspect
+        sig = inspect.signature(model.generate)
+        filtered_kwargs = {k: v for k, v in generate_kwargs.items() if k in sig.parameters}
+        outputs = model.generate(**filtered_kwargs).squeeze()
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
 
     for m in model_prune_format_mapping:

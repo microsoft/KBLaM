@@ -5,11 +5,14 @@ import numpy as np
 import torch
 from pathlib import Path
 
+from kblam.models.gemma3n_model import KblamGemma3nForConditionalGeneration
+from kblam.models.gemma3n_config import Gemma3nConfig
 from kblam.utils.data_utils import augment_row
 from kblam.utils.eval_utils import (
     _format_Q_llama,
     _format_Q_phi3,
     _format_Q_bitnet,
+    _format_Q_gemma3n,
 )
 
 from .retriever import KBRetriever
@@ -43,7 +46,7 @@ def eval_accuracy(
         dataset (list): The dataset containing questions and answers.
         exp_config (str): The experiment configuration name.
         fancy_question (bool): Whether to use augmented (fancy) questions.
-        kb_config (KBLaMConfig): The configuration for the knowledge base.
+        kb_config (KBLaMConfig | Gemma3nConfig): The configuration for the knowledge base.
         kb_size (int): The size of the knowledge base to use.
         llm_type (str): The type of the language model (e.g., 'llama3', 'phi3').
         test_batch_size (int): The batch size for testing.
@@ -67,7 +70,7 @@ def eval_accuracy(
 
     kb_embedding_real = kb_retriever.get_key_embeddings(dataset_subset_idx)
 
-    format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet}
+    format_func_map = {"llama3": _format_Q_llama, "phi3": _format_Q_phi3, "bitnet": _format_Q_bitnet, "gemma3n": _format_Q_gemma3n}
 
     if not fancy_question:
         input_strs_gen = (dataset_subset[i]["Q"] for i in range(test_batch_size))

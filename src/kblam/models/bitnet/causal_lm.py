@@ -29,7 +29,7 @@ from ..kblam_config import KBLaMConfig
 
 logger = logging.get_logger(__name__)
 
-class KBLaMBitNetForCausalLM(GenerationMixin, modeling_bitnet.BitNetPreTrainedModel):
+class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel, GenerationMixin):
     """
     Causal Language Modeling head for BitNet, adapted for KBLaM.
 

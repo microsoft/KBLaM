@@ -171,3 +171,6 @@ class KBEncoder(nn.Module, FeatureExtractionMixin):
             self.embedding.weight.device
         )
         return self.embedding(idx).bfloat16()
+
+    def get_input_dim(self):
+        return self.in_dim

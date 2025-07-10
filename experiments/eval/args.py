@@ -57,7 +57,7 @@ def parse_args():
         "--llm_type",
         type=str,
         default="phi3",
-        choices=["llama3", "phi3", "bitnet"],
+        choices=["llama3", "phi3", "bitnet", "gemma3n"],
         help="Type of language model to use",
     )
     parent_parser.add_argument(
@@ -79,11 +79,18 @@ def parse_args():
     parent_parser.add_argument(
         "--query_head_path", type=str, default="", help="Path to load KB head from"
     )
+
     parent_parser.add_argument(
         "--topk_size",
         type=int,
         default=-1,
-        help="The number of top-k entities to retrieve from the knowledge base.",
+        help="The number of top-k entities to retrieve from the knowledge base."
+    )
+
+    parent_parser.add_argument(
+        "--fancy-format",
+        action="store_true",
+        help="Use fancy/augmented question formatting."
     )
 
     # Create subparsers
@@ -98,7 +105,7 @@ def parse_args():
         type=str,
         choices=["kb", "icl", "zeroshot"],
         default="kb",
-        help="Evaluation mode: knowledge base, in-context learning, or zero-shot",
+        help="Evaluation mode: knowledge base, in-context learning, or zero-shot"
     )
     gen_parser.add_argument(
         "--exp_config_name",
@@ -116,7 +123,13 @@ def parse_args():
         "--multi_entites",
         type=int,
         default=-1,
-        help="Number of entities to process (-1 for unlimited)",
+        help="Number of entities to process (-1 for unlimited)"
+    )
+    gen_parser.add_argument(
+        "--attn_save_dir",
+        type=str,
+        default="",
+        help="Directory to save attention weights during generation evaluation"
     )
     gen_parser.add_argument(
         "--no_outlier",
@@ -174,12 +187,12 @@ def parse_args():
     ref_parser = subparsers.add_parser(
         "refusal", parents=[parent_parser], help="Evaluate refusal"
     )
-    ref_parser.add_argument(
+    gen_parser.add_argument(
         "--eval_mode",
         type=str,
         choices=["kb", "icl", "zeroshot"],
         default="kb",
-        help="Evaluation mode: knowledge base, in-context learning, or zero-shot",
+        help="Evaluation mode: knowledge base, in-context learning, or zero-shot"
     )
     ref_parser.add_argument(
         "--exp_config_name",
