@@ -9,7 +9,7 @@ import wandb
 from accelerate import Accelerator
 from rich.logging import RichHandler
 
-from transformers import AutoTokenizer, Gemma3nConfig, AutoConfig
+from transformers import AutoTokenizer, Gemma3nConfig, AutoConfig, BitNetConfig
 
 from kblam.kb_encoder import KBEncoder
 from kblam.models.kblam_config import KBLaMConfig
@@ -194,9 +194,16 @@ def main():
         model_config = Gemma3nConfig.from_pretrained(hf_model_spec)
         hidden_size = model_config.text_config.hidden_size
         num_hidden_layers = model_config.text_config.num_hidden_layers
+    elif llm_type == "bitnet":
+        model_config = BitNetConfig.from_pretrained(hf_model_spec)
+        hidden_size = model_config.hidden_size
+        num_hidden_layers = model_config.num_hidden_layers
     else:
         # For all other models, load the standard config
-        model_config = AutoConfig.from_pretrained(hf_model_spec, trust_remote_code=True)
+        model_config = AutoConfig.from_pretrained(
+            hf_model_spec,
+            trust_remote_code=True
+        )
         hidden_size = model_config.hidden_size
         num_hidden_layers = model_config.num_hidden_layers
 
