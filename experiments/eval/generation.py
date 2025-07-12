@@ -121,7 +121,9 @@ def perform_eval(
                 kb=kb_embedding,
                 topk_size=topk_size,
                 kb_config=kb_config,
-                output_attentions=True if attn_save_dir else False,
+                save_attention_weights=True if attn_save_dir else False,
+                attention_save_loc=attn_save_dir,
+                attention_file_base_name=None,
             )
             if isinstance(result, tuple) and len(result) == 2:
                 raw_output, attn_weights = result
