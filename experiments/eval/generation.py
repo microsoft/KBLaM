@@ -305,9 +305,12 @@ def eval_generate(args):
             device=torch.device("cuda"),
         )
         # Optionally load encoder weights if path provided
-        encoder_path = getattr(args, "encoder_dir", None)
-        if encoder_path:
-            encoder.load_state_dict(torch.load(encoder_path))
+        encoder_dir = getattr(args, "encoder_dir", None)
+        if encoder_dir:
+            encoder_weights_path = os.path.join(encoder_dir, "encoder.pt")
+            if not os.path.exists(encoder_weights_path):
+                raise FileNotFoundError(f"Encoder weights not found at {encoder_weights_path}. Please check the path.")
+            encoder.load_state_dict(torch.load(encoder_weights_path))
 
     kb_retriever = KBRetriever(
         encoder=encoder,
