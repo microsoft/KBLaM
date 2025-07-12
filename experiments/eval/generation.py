@@ -43,6 +43,7 @@ def perform_eval(
     multi_entites: int = -1,
     remove_sorry: bool = False,
     fancy_format: bool = False,
+    attn_save_dir: str = None,
 ):
     """Performs evaluation of the model's generation capabilities.
 
@@ -94,7 +95,7 @@ def perform_eval(
     from .utils import format_question, postprocess_output, get_topk_confidence
 
     topk_confidences = []
-    attn_save_dir = None
+    # attn_save_dir is now passed as an argument
     all_attn_weights = []
     for row in tqdm(test_kb[:subset_size]):
         if multi_entites == -1:
