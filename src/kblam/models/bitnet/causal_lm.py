@@ -30,6 +30,11 @@ from ..kblam_config import KBLaMConfig
 logger = logging.get_logger(__name__)
 
 class KBLaMBitNetForCausalLM(modeling_bitnet.BitNetPreTrainedModel, GenerationMixin):
+    def generate(self, input_ids=None, attention_mask=None, **kwargs):
+        """
+        Override generate to ensure attention_mask is always accepted and passed through.
+        """
+        return super().generate(input_ids=input_ids, attention_mask=attention_mask, **kwargs)
     """
     Causal Language Modeling head for BitNet, adapted for KBLaM.
 
