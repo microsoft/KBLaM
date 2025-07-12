@@ -187,7 +187,7 @@ def parse_args():
     ref_parser = subparsers.add_parser(
         "refusal", parents=[parent_parser], help="Evaluate refusal"
     )
-    gen_parser.add_argument(
+    ref_parser.add_argument(
         "--eval_mode",
         type=str,
         choices=["kb", "icl", "zeroshot"],
