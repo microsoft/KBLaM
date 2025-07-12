@@ -184,7 +184,25 @@ def main():
         trust_remote_code=True,
         token=hf_token if hf_token and args.llm_type == "llama3" else None,
     )
-    tokenizer.pad_token = tokenizer.eos_token
+    # Robust pad token logic for all models
+    if args.llm_type == "gemma3n":
+        # Use Gemma3n's default pad token if available
+        if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
+            pass  # Use as is
+        else:
+            try:
+                tokenizer.pad_token = "^"
+                _ = tokenizer.encode("^")
+            except Exception:
+                print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
+                tokenizer.pad_token = tokenizer.eos_token
+    else:
+        try:
+            tokenizer.pad_token = "^"
+            _ = tokenizer.encode("^")
+        except Exception:
+            print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
+            tokenizer.pad_token = tokenizer.eos_token
 
     # === Consolidated and Corrected Initialization Logic ===
 

@@ -256,16 +256,26 @@ def eval_generate(args):
     if not llm_base_dir:
         raise ValueError("A --llm_base_dir must be provided to load the correct base tokenizer.")
     tokenizer = AutoTokenizer.from_pretrained(llm_base_dir, trust_remote_code=True)
-    # Set left padding for decoder-only models (important for correct generation)
     tokenizer.padding_side = "left"
-    # Try to use '^' as pad token, fallback to eos_token if not in vocab
-    try:
-        tokenizer.pad_token = "^"
-        # If '^' is not in vocab, this will raise an error on encode
-        _ = tokenizer.encode("^")
-    except Exception:
-        print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
-        tokenizer.pad_token = tokenizer.eos_token
+    # Robust pad token logic for all models
+    if llm_type == "gemma3n":
+        # Use Gemma3n's default pad token if available
+        if hasattr(tokenizer, "pad_token") and tokenizer.pad_token is not None:
+            pass  # Use as is
+        else:
+            try:
+                tokenizer.pad_token = "^"
+                _ = tokenizer.encode("^")
+            except Exception:
+                print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
+                tokenizer.pad_token = tokenizer.eos_token
+    else:
+        try:
+            tokenizer.pad_token = "^"
+            _ = tokenizer.encode("^")
+        except Exception:
+            print("Warning: '^' not in tokenizer vocab, falling back to eos_token as pad_token.")
+            tokenizer.pad_token = tokenizer.eos_token
 
     # --- Model Loading ---
     # A mapping of llm_type to the corresponding model class.
