@@ -68,6 +68,8 @@ def perform_eval(
         tuple: A tuple containing the raw generation results as a string and a dictionary of scores.
     """
     np.random.seed(seed)
+    device = next(model.parameters()).device
+    print(f"[DEBUG] Model device: {device}")
     kb_idx = np.random.randint(0, len(kb_retriever.dataset), kb_size)
     test_kb = [kb_retriever.dataset[idx] for idx in kb_idx]
     kb_embedding = ()
@@ -79,25 +81,26 @@ def perform_eval(
 
     with torch.no_grad():
         kb_embedding = kb_retriever.get_key_embeddings(kb_idx)
+        if isinstance(kb_embedding, tuple):
+            print(f"[DEBUG] KB embedding tuple devices: {[e.device for e in kb_embedding]}")
+            kb_embedding = tuple(e.to(device) for e in kb_embedding)
+        else:
+            print(f"[DEBUG] KB embedding device: {kb_embedding.device}")
+            kb_embedding = kb_embedding.to(device)
 
+    print(f"[DEBUG] test_kb size: {len(test_kb)}")
     model_outputs = []
     answers = []
     full_outputs = []
-    # answer_question
-    subset_size = min(
-        400, len(test_kb)
-    )  # Regardless of KB size, always test 250 questions, otherwise it will be too slow
-    subset_size = min(
-        400, len(test_kb)
-    )  # Regardless of KB size, always test 250 questions, otherwise it will be too slow
-    # subset_size = 50
-
+    subset_size = min(400, len(test_kb))
+    print(f"[DEBUG] subset_size: {subset_size}")
     from .utils import format_question, postprocess_output, get_topk_confidence
 
     topk_confidences = []
-    # attn_save_dir is now passed as an argument
     all_attn_weights = []
-    for row in tqdm(test_kb[:subset_size]):
+    for i, row in enumerate(tqdm(test_kb[:subset_size])):
+        if i < 3:
+            print(f"[DEBUG] Loop idx {i}, row keys: {list(row.keys())}")
         if multi_entites == -1:
             Q = row["Q"]
             answer = row["A"]
@@ -112,8 +115,14 @@ def perform_eval(
 
         Q_fmt = format_question(Q, fancy_format)
         prompt_to_split = Q_fmt
+        tokenizer_output = tokenizer(Q_fmt, return_tensors="pt", padding=True)
+        input_ids = tokenizer_output["input_ids"].to(device)
+        attention_mask = tokenizer_output["attention_mask"].to(device)
+        if i < 3:
+            print(f"[DEBUG] input_ids shape: {input_ids.shape}, device: {input_ids.device}")
+            print(f"[DEBUG] attention_mask shape: {attention_mask.shape}, device: {attention_mask.device}")
         if eval_mode == "kb":
-            # Optionally collect attention weights if answer_question supports it
+            print(f"[DEBUG] Calling answer_question for idx {i}")
             result = answer_question(
                 tokenizer,
                 model,
@@ -125,6 +134,7 @@ def perform_eval(
                 attention_save_loc=attn_save_dir,
                 attention_file_base_name=None,
             )
+            print(f"[DEBUG] answer_question returned for idx {i}")
             if isinstance(result, tuple) and len(result) == 2:
                 raw_output, attn_weights = result
                 if attn_save_dir:
@@ -137,6 +147,9 @@ def perform_eval(
             else:
                 ins_prompt = instruction_prompts
             prompt_to_split = ins_prompt + prompt_strs + Q_fmt
+            tokenizer_output = tokenizer(prompt_to_split, return_tensors="pt", padding=True)
+            input_ids = tokenizer_output["input_ids"].to(device)
+            attention_mask = tokenizer_output["attention_mask"].to(device)
             raw_output = answer_question(
                 tokenizer,
                 model,
@@ -150,10 +163,13 @@ def perform_eval(
             else:
                 ins_prompt = zero_shot_prompt
             prompt_to_split = ins_prompt + Q_fmt
+            tokenizer_output = tokenizer(prompt_to_split, return_tensors="pt", padding=True)
+            input_ids = tokenizer_output["input_ids"].to(device)
+            attention_mask = tokenizer_output["attention_mask"].to(device)
             raw_output = answer_question(
-                tokenizer, model, prompt_to_split, kb=None, kb_config=kb_config
+                tokenizer, model, prompt_to_split, kb=None, kb_config=kb_config,
             )
-
+        print(f"[DEBUG] Finished eval_mode branch for idx {i}")
         output_parts = raw_output.split(prompt_to_split)
         model_output = output_parts[1] if len(output_parts) > 1 else raw_output
         # Post-process output (strip pad/eos tokens, etc.)
@@ -292,9 +308,12 @@ def eval_generate(args):
 
     print(f"Loading fine-tuned '{llm_type}' model from: {model_path}")
     model = model_class.from_pretrained(
-        model_path, torch_dtype=torch.bfloat16, trust_remote_code=True
+        model_path, 
+        torch_dtype="auto", 
+        trust_remote_code=True,
+        device_map="auto"
     )
-    model = model.cuda()
+    model.eval()
 
     # The KBLaM config is loaded with the model itself.
     kb_config = model.config
@@ -315,7 +334,7 @@ def eval_generate(args):
             endpoint_url="",
             out_dim=out_dim,
             frozen_base_model=True,
-            device=torch.device("cuda"),
+            device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         )
         # Optionally load encoder weights if path provided
         encoder_dir = getattr(args, "encoder_dir", None)

@@ -112,14 +112,28 @@ def answer_question(
     attention_file_base_name: Optional[str] = None,
     topk_size: int = -1,
 ):
+    print("[DEBUG][answer_question] Entered function")
+    print(f"[DEBUG][answer_question] Model type: {type(model)}")
+    print(f"[DEBUG][answer_question] Q: {Q}")
+    print(f"[DEBUG][answer_question] kb is None: {kb is None}")
+    print(f"[DEBUG][answer_question] kb_config: {kb_config}")
+    print(f"[DEBUG][answer_question] topk_size: {topk_size}")
     for m in model_question_format_mapping:
         if isinstance(model, m):
             input_str = model_question_format_mapping[m](Q)
+    print(f"[DEBUG][answer_question] input_str: {input_str}")
     tokenizer_output = tokenizer(input_str, return_tensors="pt", padding=True).to("cuda")
     input_ids, attention_masks = (
         tokenizer_output["input_ids"],
         tokenizer_output["attention_mask"],
     )
+    print(f"[DEBUG][answer_question] input_ids shape: {input_ids.shape}, device: {input_ids.device}")
+    print(f"[DEBUG][answer_question] attention_masks shape: {attention_masks.shape}, device: {attention_masks.device}")
+    if kb is not None:
+        if isinstance(kb, tuple):
+            print(f"[DEBUG][answer_question] kb tuple devices: {[k.device for k in kb]}")
+        else:
+            print(f"[DEBUG][answer_question] kb device: {kb.device}")
 
     if kb_config is not None and topk_size > -1:
         kb_config.top_k_kb = topk_size
@@ -151,10 +165,20 @@ def answer_question(
         import inspect
         sig = inspect.signature(model.generate)
         filtered_kwargs = {k: v for k, v in generate_kwargs.items() if k in sig.parameters}
-        outputs = model.generate(**filtered_kwargs).squeeze()
+        print(f"[DEBUG][answer_question] About to call model.generate with keys: {list(filtered_kwargs.keys())}")
+        print(f"[DEBUG][answer_question] model.generate input_ids shape: {filtered_kwargs.get('input_ids').shape if 'input_ids' in filtered_kwargs else 'N/A'}")
+        print(f"[DEBUG][answer_question] model.generate attention_mask shape: {filtered_kwargs.get('attention_mask').shape if 'attention_mask' in filtered_kwargs else 'N/A'}")
+        try:
+            outputs = model.generate(**filtered_kwargs).squeeze()
+            print("[DEBUG][answer_question] model.generate completed successfully")
+        except Exception as e:
+            print(f"[DEBUG][answer_question] model.generate raised exception: {e}")
+            raise
     outputs = tokenizer.decode(outputs, skip_special_tokens=False)
+    print(f"[DEBUG][answer_question] Decoded outputs: {outputs[:200]}...")
 
     for m in model_prune_format_mapping:
         if isinstance(model, m):
             pruned_output = model_prune_format_mapping[m](outputs)
+    print(f"[DEBUG][answer_question] Returning pruned_output: {pruned_output[:200]}...")
     return pruned_output
