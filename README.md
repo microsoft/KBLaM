@@ -5,7 +5,7 @@ This repo contains the official implementation of [KBLaM: Knowledge Base Augment
 Authors: Xi Wang, Liana Mikaelyan, Taketomo Isazawa, Mathew Salvaris, James Hensman.
 
 KBLaM is a new method for augmentating LLMs with external knowledge.
-Unlike Retrieval-Augmented Generation, KBLAM eliminates external
+Unlike Retrieval-Augmented Generation, KBLaM eliminates external
 retrieval modules, and unlike in-context learning, its computational overhead scales linearly with KB size rather than quadratically.
 
 ## Supported Models
