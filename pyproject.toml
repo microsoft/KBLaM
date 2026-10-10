@@ -15,7 +15,7 @@ requires-python = ">=3.10"
 license = {text = "MIT"}
 dependencies = [
     "accelerate",
-    "datasets==3.2.0",
+    "datasets==5.0.1",
     "transformers==4.46.0",
     "torch",
     "sentence_transformers",
